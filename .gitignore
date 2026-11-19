@@ -1,0 +1,6 @@
+node_modules/
+dist/
+dist-single/
+# נתוני ספקים – לא נכנסים לריפו
+src/seed.json
+tests/fixtures/
