@@ -1,0 +1,35 @@
+import asyncio, sys
+from playwright.async_api import async_playwright
+URL = 'file:///home/claude/mehiron/dist-single/index.html'
+async def main():
+    async with async_playwright() as p:
+        b = await p.chromium.launch(executable_path='/usr/bin/google-chrome', args=['--no-sandbox'])
+        pg = await b.new_page(viewport={'width': 400, 'height': 860}, device_scale_factor=2)
+        errs = []
+        pg.on('console', lambda m: m.type == 'error' and errs.append(m.text))
+        pg.on('pageerror', lambda e: errs.append(str(e)))
+        await pg.goto(URL); await pg.wait_for_timeout(1200)
+        await pg.screenshot(path='/home/claude/shots/1-home.png')
+        await pg.fill('.search input', 'a54 מסך'); await pg.wait_for_timeout(400)
+        await pg.screenshot(path='/home/claude/shots/2-search.png')
+        await pg.click('.row >> nth=0'); await pg.wait_for_timeout(500)
+        await pg.screenshot(path='/home/claude/shots/3-model.png')
+        await pg.click('text=הצג פירוט פנימי'); await pg.wait_for_timeout(300)
+        await pg.screenshot(path='/home/claude/shots/4-internal.png', full_page=False)
+        await pg.click('text=‹ חזרה'); await pg.fill('.search input', '17 פרו'); await pg.wait_for_timeout(300)
+        await pg.click('.row >> nth=0'); await pg.wait_for_timeout(400)
+        await pg.screenshot(path='/home/claude/shots/5-iphone.png')
+        seg = pg.locator('text=מכשיר למכירה')
+        if await seg.count(): await seg.click(); await pg.wait_for_timeout(300); await pg.screenshot(path='/home/claude/shots/6-devices.png')
+        await pg.click('text=‹ חזרה')
+        await pg.click('text=עדכן מחירון'); await pg.wait_for_timeout(300)
+        await pg.fill('textarea', open('tests/fixtures/asi_update.txt').read()); await pg.click('text=פענח'); await pg.wait_for_timeout(400)
+        await pg.screenshot(path='/home/claude/shots/7-import.png')
+        await pg.click('text=‹ ביטול'); await pg.click('.icon-btn[title="הגדרות"]'); await pg.wait_for_timeout(300)
+        await pg.screenshot(path='/home/claude/shots/8-settings.png')
+        await pg.click('text=‹ ביטול'); await pg.click('.icon-btn[title="מצב לקוח"]'); await pg.fill('.search input', 'a54 מסך'); await pg.wait_for_timeout(300)
+        await pg.click('.row >> nth=0'); await pg.wait_for_timeout(400)
+        await pg.screenshot(path='/home/claude/shots/9-customer.png')
+        print('errors:', errs[:10])
+        await b.close()
+asyncio.run(main())

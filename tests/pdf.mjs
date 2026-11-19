@@ -1,0 +1,11 @@
+import fs from 'fs';
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { pdfToLines } from '../src/lib/pdfText.js';
+import { parseMessage } from '../src/lib/parser.js';
+const data = new Uint8Array(fs.readFileSync('/mnt/user-data/uploads/5f0cfc5e-DOC-20261119-WA0018.pdf'));
+const text = await pdfToLines(pdfjs, data);
+fs.writeFileSync('tests/fixtures/parts_from_pdf.txt', text);
+const items = parseMessage(text, { kind: 'parts', partType: 'screen' });
+const bad = items.filter((i) => !i.ok || !i.family);
+console.log('rows', text.split('\n').length, 'items', items.length, 'bad/unfamily', bad.length);
+for (const it of (process.argv.includes('-v') ? items : bad)) console.log(`${it.ok?' ':'✗'} ${String(it.price).padStart(5)} | ${it.name} | ${it.variant} | ${it.family}/${it.tier} || ${it.raw}`);
