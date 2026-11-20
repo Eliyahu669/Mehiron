@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { REPAIRS, LABOR_GROUPS, CATEGORY_LABELS } from '../lib/defaults.js';
 import { fmt, Icon } from './util.jsx';
 import ItemsManager from './ItemsManager.jsx';
+import { useBack } from './useBack.js';
 
 const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
 
@@ -139,6 +140,7 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
 
 function Rules({ d, set, catalog }) {
   const [draft, setDraft] = useState(null);
+  useBack(!!draft, () => setDraft(null));
   const names = [...new Set(catalog.models.filter((m) => m.devKind === 'phone').map((m) => m.model))].sort();
   return (
     <>
