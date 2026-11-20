@@ -3,6 +3,7 @@
 // lite = עובד רגיל – מקבל רק קטלוג מחירים סופיים (public/catalog) והגדרות ציבוריות (app/public)
 import { DEFAULT_CONFIG } from './defaults.js';
 import { buildPublicCatalog, publicConfig, sig } from './publish.js';
+import { pack, readPriceListDoc, readCatalogDoc } from './packing.js';
 
 const LS_KEY = 'mehiron:v2';
 
@@ -29,7 +30,7 @@ export function mergePublicConfig(p) {
 }
 
 const slim = (it) => {
-  const { ok, ...rest } = it;
+  const { ok, _id, ...rest } = it;
   return rest;
 };
 const clean = (o) => JSON.parse(JSON.stringify(o));
@@ -48,7 +49,8 @@ function localStore(seed) {
   const snapshot = () => {
     const v = viewer();
     if (!previewAs || v?.showCost) return { full: true, config: state.config, lists: state.lists, ready: true };
-    return { full: false, pcfg: mergePublicConfig(publicConfig(state.config)), pub: buildPublicCatalog(state.lists, state.config), ready: true };
+    const pub = readCatalogDoc({ z: pack(buildPublicCatalog(state.lists, state.config).models, 'הקטלוג') });
+    return { full: false, pcfg: mergePublicConfig(publicConfig(state.config)), pub: { ...pub, updatedAt: Math.max(0, ...Object.values(state.lists).map((l) => l.updatedAt || 0)) }, ready: true };
   };
   const auth = () => (previewAs ? { user: { email: previewAs }, role: 'viewer', showCost: !!viewer()?.showCost } : { user: { email: 'מצב מקומי' }, role: 'admin' });
   const persist = () => {
@@ -65,12 +67,13 @@ function localStore(seed) {
     async signIn() {}, async signOut() { previewAs = null; persist(); },
     async saveConfig(cfg) { state = { ...state, config: mergeConfig(cfg) }; persist(); },
     async savePriceList(id, items, meta = {}) {
+      pack(items.map(slim)); // אותה בדיקת גודל כמו בענן
       state = { ...state, lists: { ...state.lists, [id]: { items: items.map(slim), updatedAt: Date.now(), ...meta } } };
       persist();
     },
-    async publish() {},
+    async publish() { return false; },
     async listAllowed() { return state.users; },
-    async addAllowed(email, label = '') { state.users = [...state.users.filter((u) => u.email !== email), { email: email.toLowerCase(), label, showCost: false }]; persist(); },
+    async addAllowed(email, label = '') { state.users = [...state.users.filter((u) => u.email !== email), { email: email.trim().toLowerCase(), label, showCost: false }]; persist(); },
     async removeAllowed(email) { state.users = state.users.filter((u) => u.email !== email); persist(); },
     async setShowCost(email, on) { state.users = state.users.map((u) => (u.email === email ? { ...u, showCost: !!on } : u)); persist(); },
     async createRequest(req) { state.requests = [...state.requests, { id: 'q' + Date.now(), email: previewAs || 'מקומי', status: 'open', at: Date.now(), ...req }]; persist(); },
@@ -87,8 +90,9 @@ function localStore(seed) {
 }
 
 // ---------- מצב ענן ----------
-async function cloudStore(firebaseConfig) {
-  const [{ initializeApp }, fs, au] = await Promise.all([
+async function cloudStore(firebaseConfig, sdk = null) {
+  // sdk: אפשר להזריק מימוש מדומה לבדיקות; אחרת נטען Firebase האמיתי
+  const [{ initializeApp }, fs, au] = sdk || await Promise.all([
     import('firebase/app'), import('firebase/firestore'), import('firebase/auth'),
   ]);
   const app = initializeApp(firebaseConfig);
@@ -104,65 +108,78 @@ async function cloudStore(firebaseConfig) {
 
   let current = { user: null, role: 'pending' };
   const authSubs = new Set(), dataSubs = new Set();
-  let dataUnsubs = [], selfUnsub = null;
+  let dataUnsubs = [], roleUnsubs = [];
+  let dataMode = null; // 'full' | 'lite' | null
   let state = { ready: false };
   let lastSig = null;
   const emit = () => dataSubs.forEach((cb) => cb(state));
   const emitAuth = () => authSubs.forEach((cb) => cb(current));
-  const stopData = () => { dataUnsubs.forEach((u) => u()); dataUnsubs = []; };
+  const stopData = () => { dataUnsubs.forEach((u) => u()); dataUnsubs = []; dataMode = null; };
+  const onErr = (e) => { state = { ...state, error: e?.code || 'error' }; emit(); };
 
   function startFull() {
-    stopData();
+    if (dataMode === 'full') return;
+    stopData(); dataMode = 'full';
     state = { full: true, config: mergeConfig(null), lists: {}, ready: false };
     let gotCfg = false, gotLists = false;
     dataUnsubs.push(fs.onSnapshot(fs.doc(db, 'app', 'config'), (snap) => {
-      gotCfg = true; state = { ...state, config: mergeConfig(snap.exists() ? snap.data() : null), ready: gotLists }; emit();
-    }, () => {}));
+      gotCfg = true; state = { ...state, error: null, config: mergeConfig(snap.exists() ? snap.data() : null), ready: gotLists }; emit();
+    }, onErr));
     dataUnsubs.push(fs.onSnapshot(fs.collection(db, 'pricelists'), (qs) => {
       const lists = {};
-      qs.forEach((d) => { lists[d.id] = d.data(); });
-      gotLists = true; state = { ...state, lists, ready: gotCfg }; emit();
-    }, () => {}));
+      qs.forEach((d) => { lists[d.id] = readPriceListDoc(d.data()); });
+      gotLists = true; state = { ...state, error: null, lists, ready: gotCfg }; emit();
+    }, onErr));
   }
 
   function startLite() {
-    stopData();
+    if (dataMode === 'lite') return;
+    stopData(); dataMode = 'lite';
     state = { full: false, pcfg: mergePublicConfig(null), pub: { models: [] }, ready: false };
     let gotCfg = false, gotCat = false;
     dataUnsubs.push(fs.onSnapshot(fs.doc(db, 'app', 'public'), (snap) => {
-      gotCfg = true; state = { ...state, pcfg: mergePublicConfig(snap.exists() ? snap.data() : null), ready: gotCat }; emit();
-    }, () => {}));
+      gotCfg = true; state = { ...state, error: null, pcfg: mergePublicConfig(snap.exists() ? snap.data() : null), ready: gotCat }; emit();
+    }, onErr));
     dataUnsubs.push(fs.onSnapshot(fs.doc(db, 'public', 'catalog'), (snap) => {
-      gotCat = true; state = { ...state, pub: snap.exists() ? snap.data() : { models: [] }, ready: gotCfg }; emit();
-    }, () => {}));
+      gotCat = true; state = { ...state, error: null, pub: readCatalogDoc(snap.exists() ? snap.data() : null), ready: gotCfg }; emit();
+    }, onErr));
   }
 
-  au.onAuthStateChanged(auth, async (user) => {
-    if (selfUnsub) { selfUnsub(); selfUnsub = null; }
+  au.onAuthStateChanged(auth, (user) => {
+    roleUnsubs.forEach((u) => u()); roleUnsubs = [];
     if (!user) { current = { user: null, role: 'none' }; stopData(); emitAuth(); return; }
-    const email = String(user.email).toLowerCase();
-    try {
-      const adminRef = fs.doc(db, 'app', 'admin');
-      let a = await fs.getDoc(adminRef);
-      if (!a.exists()) { // המשתמש הראשון שמתחבר הופך למנהל
-        await fs.setDoc(adminRef, { uid: user.uid, email });
-        a = await fs.getDoc(adminRef);
+    const email = String(user.email || '').toLowerCase();
+    const who = { email, name: user.displayName };
+    let isAdmin = null; // לא ידוע עדיין
+    let allowed = null; // null = לא ידוע, false = אין, { showCost }
+    const decide = () => {
+      if (isAdmin === true) {
+        if (current.role !== 'admin') { current = { user: who, role: 'admin' }; emitAuth(); }
+        startFull();
+      } else if (isAdmin === false && allowed !== null) {
+        if (!allowed) { current = { user: who, role: 'none' }; stopData(); emitAuth(); return; }
+        const changed = current.role !== 'viewer' || current.showCost !== allowed.showCost;
+        current = { user: who, role: 'viewer', showCost: allowed.showCost };
+        if (changed) emitAuth();
+        (allowed.showCost ? startFull : startLite)();
       }
-      if (a.data()?.uid === user.uid) {
-        current = { user: { email, name: user.displayName }, role: 'admin' };
-        emitAuth(); startFull();
+    };
+    const adminRef = fs.doc(db, 'app', 'admin');
+    roleUnsubs.push(fs.onSnapshot(adminRef, { includeMetadataChanges: true }, (snap) => {
+      if (!snap.exists()) {
+        if (snap.metadata.fromCache) return; // לא ידוע בלי שרת – מחכים
+        // המשתמש הראשון שמתחבר הופך למנהל (החוקים מאפשרים רק אם עדיין אין מנהל)
+        fs.setDoc(adminRef, { uid: user.uid, email }).catch(() => { isAdmin = false; decide(); });
         return;
       }
-    } catch { /* ממשיכים לבדיקת עובד */ }
-    // עובד: מאזינים למסמך ההרשאה שלו – כשהמנהל מדליק/מכבה את המתג זה מתעדכן מיד
-    selfUnsub = fs.onSnapshot(fs.doc(db, 'allowed', email), (snap) => {
-      if (!snap.exists()) { current = { user: { email }, role: 'none' }; stopData(); emitAuth(); return; }
-      const showCost = snap.data()?.showCost === true;
-      const changed = current.role !== 'viewer' || current.showCost !== showCost;
-      current = { user: { email, name: user.displayName }, role: 'viewer', showCost };
-      emitAuth();
-      if (changed) (showCost ? startFull : startLite)();
-    }, () => { current = { user: { email }, role: 'none' }; emitAuth(); });
+      isAdmin = snap.data()?.uid === user.uid;
+      decide();
+    }, (e) => { if (isAdmin === null) { isAdmin = false; decide(); } onErr(e); }));
+    // עובד: מסמך ההרשאה שלו – כשהמנהל מדליק/מכבה את המתג זה מתעדכן מיד
+    roleUnsubs.push(fs.onSnapshot(fs.doc(db, 'allowed', email), (snap) => {
+      allowed = snap.exists() ? { showCost: snap.data()?.showCost === true } : false;
+      decide();
+    }, () => { allowed = false; decide(); }));
   });
 
   return {
@@ -185,7 +202,8 @@ async function cloudStore(firebaseConfig) {
     async signOut() { await au.signOut(auth); },
     async saveConfig(cfg) { await fs.setDoc(fs.doc(db, 'app', 'config'), clean(cfg)); },
     async savePriceList(id, items, meta = {}) {
-      await fs.setDoc(fs.doc(db, 'pricelists', id), clean({ items: items.map(slim), updatedAt: Date.now(), ...meta }));
+      const z = pack(items.map(slim));
+      await fs.setDoc(fs.doc(db, 'pricelists', id), clean({ z, v: 2, count: items.length, updatedAt: Date.now(), ...meta }));
     },
     /** מנהל בלבד: מפרסם לעובדים קטלוג מחירים סופיים. נכתב רק אם משהו השתנה */
     async publish(lists, cfg) {
@@ -197,8 +215,9 @@ async function cloudStore(firebaseConfig) {
         const cur = await fs.getDoc(fs.doc(db, 'public', 'catalog')).catch(() => null);
         if (cur?.exists() && cur.data().sig === s) { lastSig = s; return false; }
       }
+      const z = pack(pub.models, 'קטלוג המחירים');
       await fs.setDoc(fs.doc(db, 'app', 'public'), clean(pcfg));
-      await fs.setDoc(fs.doc(db, 'public', 'catalog'), clean({ ...pub, sig: s }));
+      await fs.setDoc(fs.doc(db, 'public', 'catalog'), { v: 2, z, updatedAt: pub.updatedAt, count: pub.models.length, sig: s });
       lastSig = s;
       return true;
     },
@@ -212,7 +231,7 @@ async function cloudStore(firebaseConfig) {
     async removeAllowed(email) { await fs.deleteDoc(fs.doc(db, 'allowed', email)); },
     async setShowCost(email, on) { await fs.setDoc(fs.doc(db, 'allowed', email), { showCost: !!on }, { merge: true }); },
     async createRequest(req) {
-      await fs.addDoc(fs.collection(db, 'requests'), clean({ ...req, email: current.user?.email || '', status: 'open', at: Date.now() }));
+      await fs.addDoc(fs.collection(db, 'requests'), clean({ what: String(req.what || '').slice(0, 200), email: current.user?.email || '', status: 'open', at: Date.now() }));
     },
     async resolveRequest(id, approve, email) {
       if (approve && email) await fs.setDoc(fs.doc(db, 'allowed', email), { showCost: true }, { merge: true });
@@ -221,7 +240,7 @@ async function cloudStore(firebaseConfig) {
   };
 }
 
-export async function createStore({ firebaseConfig, seed }) {
-  if (firebaseConfig && firebaseConfig.apiKey) return cloudStore(firebaseConfig);
+export async function createStore({ firebaseConfig, seed, sdk }) {
+  if (firebaseConfig && firebaseConfig.apiKey) return cloudStore(firebaseConfig, sdk);
   return localStore(seed);
 }

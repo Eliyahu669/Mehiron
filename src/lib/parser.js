@@ -7,15 +7,24 @@ const MODEL_WORDS = new Set(['iphone', 'ip', 'lp', 'galaxy', 'redmi', 'poco', 'a
   'vivo', 'nothing', 'easytab', 'teclast', 'lenovo', 'flip', 'fold', 'homepod', 'modem', 'camera', 'charger', 'adapter',
   'mi', 'xiaomi', 'tv', 'box', 'pod', 'samsung', 'apple', 'hurricane', 'cable', 'mouse']);
 const BRAND_HEADERS = { apple: 'Apple', samsung: 'Samsung', xiaomi: 'Xiaomi', redmi: 'Xiaomi', poco: 'Xiaomi' };
+const HEADER_WORDS = new Set(['apple', 'samsung', 'xiaomi', 'redmi', 'poco', 'galaxy', 'iphone', 'מכשירי', 'מכשירים', 'טלפונים']);
 
-const EMOJI = /[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}️‍‼⁉]/gu;
-const clean = (s) => String(s || '').replace(EMOJI, '').replace(/[‎‏‪-‮]/g, '')
-  .replace(/([֐-׿])(\d)/g, '$1 $2').replace(/(\d)([֐-׿])/g, '$1 $2').replace(/\s+/g, ' ').trim();
+const EMOJI = /[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\uFE0F\u200D\u20E3\u203C\u2049]/gu;
+const KEYCAP = /[0-9#*]\uFE0F?\u20E3/g;
+const clean = (s) => String(s || '').replace(KEYCAP, ' ').replace(EMOJI, '').replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '')
+  .replace(/([\u0590-\u05ff])(\d)/g, '$1 $2').replace(/(\d)([\u0590-\u05ff])/g, '$1 $2').replace(/\s+/g, ' ').trim();
+// ש"ח / ש״ח / שח / שקל / NIS – כמו ₪ (בלי lookbehind, בשביל Safari ישן)
+const CUR_HEB = /(^|[^\u0590-\u05ff])(ש["\u05F4'\u05F3]{1,2}ח|שח|שקלים|שקל)(?=$|[^\u0590-\u05ff])/g;
+const CUR_LAT = /\b(nis|ils)\b/gi;
+const toShekel = (s) => s.replace(CUR_HEB, '$1₪').replace(CUR_LAT, '₪');
+// כותרת של הודעה שהועתקה מוואטסאפ: "[20/11/2026, 10:15] ספק:" / "20.11.26, 10:15 - ספק:"
+const WA_HEADER = /^\[?\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?,?\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s?[AaPp]\.?\s?[Mm]\.?)?\]?\s*(?:-\s*)?(?:[^:]{1,40}:(?:\s|$))?/;
+const WA_SYSTEM = /<\s*(?:המדיה לא נכללה|מדיה הושמטה|Media omitted)\s*>|הודעה זו נמחקה|This message was deleted|ההודעה נמחקה/i;
 const num = (s) => Number(String(s).replace(/,/g, ''));
 
 /** מחלץ מחיר משורה. מחזיר { price, rest } או null */
 export function extractPrice(line) {
-  const s = clean(line);
+  const s = toShekel(clean(line));
   // 1. מחיר עם סימן ₪ – קודם מספר שצמוד אחרי ₪, אחר כך מספר שלפני ₪
   const NUM = '(\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?';
   for (const re of [new RegExp('₪\\s*' + NUM, 'g'), new RegExp(NUM + '\\s*₪', 'g')]) {
@@ -26,7 +35,7 @@ export function extractPrice(line) {
     if (v > 0) return { price: v, rest: tidy(s.slice(0, m.index) + ' ' + s.slice(m.index + m[0].length)) };
   }
   // 2. מחיר אחרי מקף: "A54 128-1420" / "Ip 15 pro 128-4850dcs"
-  const dash = [...s.matchAll(/-\s*(\d{1,3}(?:,\d{3})+|\d{2,6})(?![\d])/g)].filter((m) => num(m[1]) >= 50 && !/^\s*(g|gb|m|mm|tb)\b/i.test(s.slice(m.index + m[0].length)));
+  const dash = [...s.matchAll(/-\s*(\d{1,3}(?:,\d{3})+|\d{2,6})(?![\d])/g)].filter((m) => num(m[1]) >= 50 && !STORAGE.has(num(m[1])) && !/^\s*(g|gb|m|mm|tb)\b/i.test(s.slice(m.index + m[0].length)));
   if (dash.length) {
     const m = dash[dash.length - 1];
     return { price: num(m[1]), rest: tidy(s.slice(0, m.index) + ' ' + s.slice(m.index + m[0].length)) };
@@ -69,13 +78,39 @@ function headerBrand(text) {
 
 const fixQuality = (s) => clean(s).replace(/מקןרי/g, 'מקורי').replace(/ללאר(?=\s|$)/g, 'ללא').replace(/מסגות/g, 'מסגרת').replace(/סני(?=\s|$)/g, 'סאני');
 
+const NOTE_STORAGE = /(^|\s)(64|128|256|512)\s*(gb|g|גיגה|ג'יגה)?(?=\s|$)|(^|\s)([12])\s*(tb|t|טרה)(?=\s|$)/i;
+const HB = '(^|[^\u0590-\u05ff])[הולבמ]?';
+const HE = '(?=$|[^\u0590-\u05ff])';
+// סוג חלק לפי מילים בשורה (מסך קודם: "מסך כולל סוללה" הוא מסך)
+const PART_WORDS = [
+  ['screen', new RegExp(`${HB}(מסך|מסכים|תצוגה)${HE}|\\b(screen|lcd|oled|amoled|incell|display)\\b`, 'i')],
+  ['battery', new RegExp(`${HB}(סוללה|סוללות|בטריה)${HE}|\\b(battery|batt)\\b`, 'i')],
+  ['port', new RegExp(`${HB}(שקע|שקעים|שקע טעינה)${HE}|\\b(charging port|charge port|charging board|usb board)\\b`, 'i')],
+  ['camera', new RegExp(`${HB}(מצלמה|מצלמות)${HE}|\\b(camera|cam)\\b`, 'i')],
+  ['back', new RegExp(`${HB}(גב|גבים|זכוכית אחורית)${HE}|\\b(back glass|back cover|backglass)\\b`, 'i')],
+  ['housing', new RegExp(`${HB}(גוף|שלדה)${HE}|\\bhousing\\b`, 'i')],
+];
+export function detectPartType(text) {
+  // "כולל סוללה" / "עם מסגרת" מתארים את החלק, לא קובעים את הסוג
+  const t = String(text || '').replace(/(^|\s)(כולל|עם|ללא|בלי|\+)\s*\S+/g, ' ');
+  for (const [id, re] of PART_WORDS) if (re.test(t)) return id;
+  return null;
+}
+
 export function makeItem(name, note, price, ctxBrand, raw, opts) {
-  const id = identify(name, ctxBrand);
-  const variant = fixQuality([note, hebrewAndTags(id.extra)].filter(Boolean).join(' '));
   const isPart = opts.kind === 'parts';
+  const id = identify(name, ctxBrand);
+  if (!isPart && id.storage == null && note) { // "אייפון אייר" / "256 ₪3,000" – הנפח בשורת המחיר
+    const m = String(note).match(NOTE_STORAGE);
+    if (m && (id.family || id.kind === 'tablet')) {
+      id.storage = m[2] ? Number(m[2]) : Number(m[5]) * 1024;
+      note = String(note).replace(m[0], ' ').replace(/\s+/g, ' ').trim();
+    }
+  }
+  const variant = fixQuality([note, hebrewAndTags(id.extra)].filter(Boolean).join(' '));
   const item = {
     kind: isPart ? 'part' : 'device',
-    partType: isPart ? opts.partType || 'screen' : null,
+    partType: isPart ? detectPartType(`${name} ${note || ''}`) || opts.partType || 'screen' : null,
     brand: id.brand, model: id.model, storage: isPart ? null : id.storage,
     family: id.family, tier: id.tier, devKind: id.kind, category: id.category,
     name: isPart ? id.model : displayName(id),
@@ -100,7 +135,13 @@ function hebrewAndTags(extra) {
  * מחזיר מערך פריטים; פריטים שלא זוהו מסומנים ok=false לתיקון ידני
  */
 export function parseMessage(text, opts = {}) {
-  const lines = String(text || '').split(/\r?\n/);
+  const lines = String(text || '').split(/\r?\n/)
+    .filter((l) => !WA_SYSTEM.test(l))
+    .map((l) => {
+      const c = l.replace(/^[\s\u200e\u200f\u202a-\u202e\u2066-\u2069]+/, '');
+      const m = c.match(WA_HEADER);
+      return m && m[0].trim() ? c.slice(m[0].length) : l;
+    });
   const tabLines = lines.filter((l) => l.includes('\t')).length;
   const items = tabLines >= 3 && tabLines >= lines.filter((l) => l.trim()).length * 0.3 ? parseTable(lines, opts) : parseFree(lines, opts);
   const kept = items.filter((it) => !it.excluded);
@@ -127,13 +168,16 @@ function parseFree(lines, opts) {
       const prevBlank = i === 0 || !L[i - 1];
       const next = L[i + 1] || '';
       const np = next ? extractPrice(next) : null;
-      const isHeader = prevBlank && (!next || (np && hasModel(np.rest)) || (!np && hasModel(next) && !hasModel(line)));
+      // שורה שהיא רק שם יצרן ("אפל", "Samsung.") היא תמיד כותרת של קטע
+      const brandOnly = !!headerBrand(line) && tokenize(line).every((t) => HEADER_WORDS.has(t) || /^[\u0590-\u05ff]+$/.test(t));
+      const isHeader = brandOnly || (prevBlank && (!next || (np && hasModel(np.rest)) || (!np && hasModel(next) && !hasModel(line))));
       if (isHeader && !/\d/.test(line)) {
         ctxBrand = headerBrand(line);
         pending = []; base = null; last = null;
         continue;
       }
-      if (!hasModel(line) && last && !pending.length) { // הערה לפריט הקודם
+      const shortNote = line.split(' ').length <= 5 && !/\d{5,}|\d{2,4}[-/]\d{3,}/.test(line);
+      if (!hasModel(line) && last && !pending.length && shortNote) { // הערה לפריט הקודם
         last.variant = fixQuality([last.variant, line].filter(Boolean).join(' '));
         last.raw += ' / ' + line;
         last.key = last.kind === 'part' ? `${last.mkey}|${last.partType}|${last.variant}` : `${last.mkey}|${last.storage || ''}|${last.variant}`;
@@ -142,11 +186,11 @@ function parseFree(lines, opts) {
       pending.push(line);
       continue;
     }
-    let name, note = '';
+    let name, note = '', fromBase = false;
     if (hasModel(p.rest)) {
       name = p.rest;
       if (pending.length && !hasModel(pending.join(' '))) note = pending.join(' ');
-      else if (pending.length) name = pending.join(' ') + ' ' + p.rest;
+      else if (pending.length && !identify(p.rest, ctxBrand).family) name = pending.join(' ') + ' ' + p.rest;
       pending = [];
       base = name;
     } else {
@@ -155,9 +199,9 @@ function parseFree(lines, opts) {
         items.push({ ...makeItem(p.rest, '', p.price, ctxBrand, line, opts), ok: false });
         continue;
       }
-      name = base; note = p.rest;
+      name = base; note = p.rest; fromBase = true;
     }
-    const it = makeItem(name, note, p.price, ctxBrand, (base && base !== name ? base + ' / ' : '') + line, opts);
+    const it = makeItem(name, note, p.price, ctxBrand, (fromBase ? base + ' / ' : '') + line, opts);
     items.push(it);
     last = it;
   }

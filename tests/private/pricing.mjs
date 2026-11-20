@@ -1,8 +1,8 @@
 import fs from 'fs';
-import { parseMessage, mergeItems } from '../src/lib/parser.js';
-import { buildCatalog, searchModels } from '../src/lib/catalog.js';
-import { repairQuote, deviceQuotes, laborFor } from '../src/lib/pricing.js';
-import { DEFAULT_CONFIG as cfg } from '../src/lib/defaults.js';
+import { parseMessage, mergeItems } from '../../src/lib/parser.js';
+import { buildCatalog, searchModels } from '../../src/lib/catalog.js';
+import { repairQuote, deviceQuotes, laborFor } from '../../src/lib/pricing.js';
+import { DEFAULT_CONFIG as cfg } from '../../src/lib/defaults.js';
 const rd = (f) => fs.readFileSync('tests/fixtures/' + f, 'utf8');
 const t = Date.parse('2026-11-19T12:00:00+02:00');
 const asi = mergeItems(mergeItems([], parseMessage(rd('asi_main.txt'), { kind: 'devices' }), { now: t }), parseMessage(rd('asi_update.txt'), { kind: 'devices' }), { replace: false, now: t });

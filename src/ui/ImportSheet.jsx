@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { parseMessage, mergeItems, makeItem } from '../lib/parser.js';
 import { REPAIRS } from '../lib/defaults.js';
 import { fmt, Icon } from './util.jsx';
+import { useBack } from './useBack.js';
 
 export default function ImportSheet({ cfg, lists, initialText = '', onClose, onSaveList, onSaveConfig, toast }) {
   const suppliers = cfg.suppliers || [];
@@ -13,12 +14,17 @@ export default function ImportSheet({ cfg, lists, initialText = '', onClose, onS
   const [items, setItems] = useState(null);
   const [busy, setBusy] = useState(false);
   const [newSup, setNewSup] = useState(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const opts = { kind: supplier?.type === 'parts' ? 'parts' : 'devices', partType };
+  useBack(!!items, () => setItems(null)); // אחורה מהתצוגה המקדימה חוזר לטקסט
 
-  const run = () => {
-    const res = parseMessage(text, opts);
+  const run = (t = text) => {
+    const res = parseMessage(t, opts);
     setItems(res.map((it, i) => ({ ...it, _id: i })));
+    setConfirmRemove(false);
   };
+  // החלפת ספק / סוג חלק אחרי פענוח – מפענחים מחדש עם ההגדרה החדשה
+  useEffect(() => { if (items && text.trim()) run(); }, [opts.kind, partType]);
 
   const onPdf = async (file) => {
     if (!file) return;
@@ -32,8 +38,7 @@ export default function ImportSheet({ cfg, lists, initialText = '', onClose, onS
       const lines = await pdfToLines(pdfjs, data);
       if (!lines.trim()) toast('ב-PDF הזה אין טקסט (כנראה צילום). צריך להעתיק את הטקסט מההודעה.');
       setText(lines);
-      const res = parseMessage(lines, opts);
-      setItems(res.map((it, i) => ({ ...it, _id: i })));
+      run(lines);
     } catch (e) {
       toast('לא הצלחתי לקרוא את ה-PDF');
     } finally { setBusy(false); }
@@ -65,6 +70,7 @@ export default function ImportSheet({ cfg, lists, initialText = '', onClose, onS
   }));
 
   const save = async () => {
+    if (stats.removed > 0 && !confirmRemove) { setConfirmRemove(true); return; }
     setBusy(true);
     try {
       const merged = mergeItems(old, items.filter((i) => i.ok).map(({ _id, ...r }) => r), { replace: mode === 'replace' });
@@ -92,7 +98,7 @@ export default function ImportSheet({ cfg, lists, initialText = '', onClose, onS
 
           <div className="card" style={{ padding: 14 }}>
             <label className="field"><span>ספק</span>
-              <select className="input" value={supplierId} onChange={(e) => { setSupplierId(e.target.value); setItems(null); }}>
+              <select className="input" value={supplierId} onChange={(e) => { setSupplierId(e.target.value); setConfirmRemove(false); }}>
                 {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name} · {s.type === 'parts' ? 'חלקים' : 'מכשירים'}</option>)}
               </select>
             </label>
@@ -107,24 +113,24 @@ export default function ImportSheet({ cfg, lists, initialText = '', onClose, onS
               </div>
             )}
             {supplier?.type === 'parts' && (
-              <label className="field"><span>סוג החלקים במחירון</span>
+              <label className="field"><span>סוג חלק (כשלא כתוב בשורה עצמה)</span>
                 <select className="input" value={partType} onChange={(e) => setPartType(e.target.value)}>
                   {REPAIRS.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
                 </select>
               </label>
             )}
             <div className="seg">
-              <button className={mode === 'replace' ? 'on' : ''} onClick={() => setMode('replace')}>מחירון מלא (מחליף)</button>
-              <button className={mode === 'merge' ? 'on' : ''} onClick={() => setMode('merge')}>עדכון חלקי (מוסיף)</button>
+              <button className={mode === 'replace' ? 'on' : ''} onClick={() => { setMode('replace'); setConfirmRemove(false); }}>מחירון מלא (מחליף)</button>
+              <button className={mode === 'merge' ? 'on' : ''} onClick={() => { setMode('merge'); setConfirmRemove(false); }}>עדכון חלקי (מוסיף)</button>
             </div>
           </div>
 
           <div className="section-title">הודעת הספק</div>
           <textarea className="input" placeholder="מדביקים כאן את ההודעה מהוואטסאפ…" value={text} onChange={(e) => setText(e.target.value)} dir="auto" />
           <div className="actions">
-            <button className="btn primary" disabled={!text.trim() || busy} onClick={run}>פענח</button>
+            <button className="btn primary" disabled={!text.trim() || busy} onClick={() => run()}>פענח</button>
             <label className="btn" style={{ position: 'relative' }}>{Icon.upload}<span>{busy ? 'קורא…' : 'קובץ PDF'}</span>
-              <input type="file" accept="application/pdf" style={{ position: 'absolute', inset: 0, opacity: 0 }} onChange={(e) => onPdf(e.target.files?.[0])} />
+              <input type="file" accept="application/pdf" style={{ position: 'absolute', inset: 0, opacity: 0 }} onChange={(e) => { onPdf(e.target.files?.[0]); e.target.value = ''; }} />
             </label>
           </div>
 
@@ -135,7 +141,7 @@ export default function ImportSheet({ cfg, lists, initialText = '', onClose, onS
                 {stats.bad > 0 && <span className="tag red">לא זוהו {stats.bad}</span>}
                 <span className="tag gray">חדשים {stats.added}</span>
                 <span className="tag orange">מחיר השתנה {stats.changed}</span>
-                {stats.removed > 0 && <span className="tag gray">יוסרו {stats.removed}</span>}
+                {stats.removed > 0 && <span className="tag red">יוסרו {stats.removed}</span>}
               </div>
               <div className="card list">
                 {[...items].sort((a, b) => Number(a.ok) - Number(b.ok)).map((it) => {
@@ -146,7 +152,7 @@ export default function ImportSheet({ cfg, lists, initialText = '', onClose, onS
                       <div className="nm">
                         <input className="input" style={{ padding: '4px 8px', fontSize: 14 }} defaultValue={it.name || it.raw}
                           onBlur={(e) => e.target.value !== (it.name || it.raw) && updateRow(it._id, { name: e.target.value })} />
-                        <div className="v">{it.variant}{o && o.price !== it.price ? ` · היה ${fmt(o.price)}` : ''}{!it.ok ? ` · "${it.raw}"` : ''}</div>
+                        <div className="v">{[opts.kind === 'parts' ? REPAIRS.find((r) => r.id === it.partType)?.label : '', it.variant].filter(Boolean).join(' · ')}{o && o.price !== it.price ? ` · היה ${fmt(o.price)}` : ''}{!it.ok ? ` · "${it.raw}"` : ''}</div>
                       </div>
                       <input className="input sm num" inputMode="numeric" defaultValue={it.price}
                         onBlur={(e) => Number(e.target.value) !== it.price && updateRow(it._id, { price: e.target.value })} />
@@ -156,8 +162,8 @@ export default function ImportSheet({ cfg, lists, initialText = '', onClose, onS
                 })}
               </div>
               <div className="actions" style={{ position: 'sticky', bottom: 12 }}>
-                <button className="btn primary" style={{ flex: 1, height: 48, justifyContent: 'center' }} disabled={busy || !stats.ok} onClick={save}>
-                  שמור ועדכן את כל הסניפים ({stats.ok})
+                <button className={'btn ' + (confirmRemove ? 'danger confirm' : 'primary')} style={{ flex: 1, height: 48, justifyContent: 'center' }} disabled={busy || !stats.ok} onClick={save}>
+                  {confirmRemove ? `${stats.removed} פריטים ישנים יימחקו מהמחירון · לחץ שוב לאישור` : `שמור ועדכן את כל הסניפים (${stats.ok})`}
                 </button>
               </div>
             </>

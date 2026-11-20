@@ -1,7 +1,7 @@
 import fs from 'fs';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { pdfToLines } from '../src/lib/pdfText.js';
-import { parseMessage } from '../src/lib/parser.js';
+import { pdfToLines } from '../../src/lib/pdfText.js';
+import { parseMessage } from '../../src/lib/parser.js';
 const data = new Uint8Array(fs.readFileSync('/mnt/user-data/uploads/5f0cfc5e-DOC-20261119-WA0018.pdf'));
 const text = await pdfToLines(pdfjs, data);
 fs.writeFileSync('tests/fixtures/parts_from_pdf.txt', text);

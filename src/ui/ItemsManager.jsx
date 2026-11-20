@@ -1,10 +1,11 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { manualItem } from '../lib/parser.js';
 import { REPAIRS, CATEGORY_LABELS } from '../lib/defaults.js';
 import { searchTokens } from '../lib/normalize.js';
 import { fmt, Icon, daysLabel } from './util.jsx';
 import { freshness } from '../lib/pricing.js';
 import { useBack } from './useBack.js';
+import { uniqueKey, bulkPrice, applyBulkPrice } from '../lib/items.js';
 
 // ניהול ידני של פריטי המחירון – מנהל בלבד
 export default function ItemsManager({ cfg, lists, store, toast, focus }) {
@@ -16,17 +17,22 @@ export default function ItemsManager({ cfg, lists, store, toast, focus }) {
   const [q, setQ] = useState('');
   const [edit, setEdit] = useState(() => {
     if (!focus?.key) return null;
-    const idx = (lists?.[focus.supplierId]?.items || []).findIndex((x) => x.key === focus.key);
-    return idx >= 0 ? { ...toForm(lists[focus.supplierId].items[idx]), index: idx } : null;
+    const it = (lists?.[focus.supplierId]?.items || []).find((x) => x.key === focus.key);
+    return it ? { ...toForm(it), key: it.key } : null;
   });
   const [busy, setBusy] = useState(false);
+  const [sel, setSel] = useState(null); // null = לא במצב בחירה, אחרת Set של מפתחות
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [bulk, setBulk] = useState(null); // { mode, value } – חלון שינוי מחיר
   useBack(!!edit, () => setEdit(null));
+  useBack(sel !== null, () => { setSel(null); setBulk(null); });
+  useBack(!!bulk, () => setBulk(null));
+  useEffect(() => { if (!confirmDel) return undefined; const t = setTimeout(() => setConfirmDel(false), 4000); return () => clearTimeout(t); }, [confirmDel]);
 
   const shown = useMemo(() => {
     const t = searchTokens(q);
-    const list = items.map((it, i) => ({ it, i }));
-    if (!t.length) return list;
-    return list.filter(({ it }) => {
+    if (!t.length) return items;
+    return items.filter((it) => {
       const hay = searchTokens(`${it.brand || ''} ${it.name} ${it.variant || ''}`);
       return t.every((x, j) => hay.includes(x) || (j === t.length - 1 && hay.some((h) => h.startsWith(x))) || (it.variant || '').includes(x));
     });
@@ -37,35 +43,60 @@ export default function ItemsManager({ cfg, lists, store, toast, focus }) {
     try {
       await store.savePriceList(supplierId, next, { supplierName: supplier?.name || supplierId, updatedAt: lists?.[supplierId]?.updatedAt || Date.now() });
       toast(label);
-      setEdit(null);
-    } catch (e) { toast('השמירה נכשלה: ' + (e?.message || e)); }
+      return true;
+    } catch (e) { toast('השמירה נכשלה: ' + (e?.message || e)); return false; }
     finally { setBusy(false); }
   };
 
-  const onSave = () => {
-    const prev = edit.index != null ? items[edit.index] : null;
+  const onSave = async () => {
+    const index = edit.key != null ? items.findIndex((x) => x.key === edit.key) : -1;
+    const prev = index >= 0 ? items[index] : null;
     const it = manualItem(edit, kind, prev);
     if (!it.ok) { toast('חסר שם או מחיר'); return; }
     const { ok, ...rec } = it;
+    rec.key = uniqueKey(items, rec.key, index);
     const next = [...items];
-    if (edit.index != null) next[edit.index] = rec; else next.push(rec);
-    saveList(next, edit.index != null ? 'הפריט עודכן' : 'הפריט נוסף');
+    if (index >= 0) next[index] = rec; else next.push(rec);
+    if (await saveList(next, index >= 0 ? 'הפריט עודכן' : 'הפריט נוסף')) setEdit(null);
   };
 
-  const onDelete = () => {
-    const next = items.filter((_, i) => i !== edit.index);
-    saveList(next, 'הפריט נמחק');
+  const onDelete = async () => {
+    const next = items.filter((x) => x.key !== edit.key);
+    if (await saveList(next, 'הפריט נמחק')) setEdit(null);
   };
+
+  // ---- בחירה מרובה ----
+  const toggle = (key) => setSel((s) => { const n = new Set(s); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+  const allShownSelected = sel && shown.length > 0 && shown.every((it) => sel.has(it.key));
+  const selectAll = () => setSel((s) => {
+    const n = new Set(s);
+    if (allShownSelected) shown.forEach((it) => n.delete(it.key)); else shown.forEach((it) => n.add(it.key));
+    return n;
+  });
+  const bulkDelete = async () => {
+    if (!confirmDel) { setConfirmDel(true); return; }
+    setConfirmDel(false);
+    const count = sel.size;
+    const next = items.filter((x) => !sel.has(x.key));
+    if (await saveList(next, `נמחקו ${count} פריטים`)) setSel(null);
+  };
+  const bulkApply = async () => {
+    const { items: next, changed, skipped } = applyBulkPrice(items, sel, bulk.mode, bulk.value);
+    if (!changed) { toast(skipped ? 'המחיר החדש לא תקין (חייב להיות גדול מ-0)' : 'אין שינוי במחיר'); return; }
+    if (await saveList(next, `עודכן מחיר ל-${changed} פריטים${skipped ? ` · ${skipped} דולגו (מחיר לא תקין)` : ''}`)) { setBulk(null); setSel(null); }
+  };
+  const sample = sel && bulk && bulk.value !== '' ? items.find((x) => sel.has(x.key)) : null;
+  const sampleNew = sample ? bulkPrice(sample.price, bulk.mode, bulk.value) : null;
 
   return (
     <>
       <div className="pills" style={{ paddingTop: 8 }}>
-        {suppliers.map((s) => <button key={s.id} className={'pill' + (s.id === supplierId ? ' on' : '')} onClick={() => { setSupplierId(s.id); setEdit(null); }}>{s.name}</button>)}
+        {suppliers.map((s) => <button key={s.id} className={'pill' + (s.id === supplierId ? ' on' : '')} onClick={() => { setSupplierId(s.id); setEdit(null); setSel(null); setBulk(null); }}>{s.name}</button>)}
       </div>
 
       {edit ? (
         <div className="card" style={{ padding: 14, marginTop: 8 }}>
-          <div className="t1" style={{ fontWeight: 700, marginBottom: 4 }}>{edit.index != null ? 'עריכת פריט' : 'פריט חדש'} · {supplier?.name}</div>
+          <div className="t1" style={{ fontWeight: 700, marginBottom: 4 }}>{edit.key != null ? 'עריכת פריט' : 'פריט חדש'} · {supplier?.name}</div>
           <label className="field"><span>שם הדגם / הפריט</span>
             <input className="input" dir="auto" value={edit.name} placeholder={kind === 'parts' ? 'Galaxy A54' : 'iPhone 15 Pro'} onChange={(e) => setEdit({ ...edit, name: e.target.value })} /></label>
           {kind === 'parts' ? (
@@ -91,7 +122,7 @@ export default function ItemsManager({ cfg, lists, store, toast, focus }) {
           {edit.raw && edit.raw !== 'ידני' && <div className="muted">מקור: {edit.raw}</div>}
           <div className="actions">
             <button className="btn primary" disabled={busy} onClick={onSave}>שמור</button>
-            {edit.index != null && <button className="btn danger" disabled={busy} onClick={onDelete}>{Icon.trash}<span>מחק</span></button>}
+            {edit.key != null && <button className="btn danger" disabled={busy} onClick={onDelete}>{Icon.trash}<span>מחק</span></button>}
             <button className="btn" onClick={() => setEdit(null)}>ביטול</button>
           </div>
         </div>
@@ -99,23 +130,60 @@ export default function ItemsManager({ cfg, lists, store, toast, focus }) {
         <>
           <div className="actions" style={{ marginTop: 8 }}>
             <input className="input" style={{ flex: 1 }} placeholder="חיפוש פריט…" value={q} onChange={(e) => setQ(e.target.value)} />
-            <button className="btn primary" onClick={() => setEdit({ name: '', variant: '', price: '', storage: '', partType: 'screen' })}>{Icon.plus}<span>פריט</span></button>
+            <button className={'btn' + (sel ? ' primary' : '')} onClick={() => { setSel(sel ? null : new Set()); setBulk(null); setConfirmDel(false); }}>{sel ? 'סיום' : 'בחירה'}</button>
+            {!sel && <button className="btn primary" onClick={() => setEdit({ name: '', variant: '', price: '', storage: '', partType: 'screen' })}>{Icon.plus}<span>פריט</span></button>}
           </div>
+
+          {sel && (
+            <div className="card selbar">
+              <div className="selbar-row">
+                <b className="num">נבחרו {sel.size}</b>
+                <button className="btn" onClick={selectAll} disabled={!shown.length}>{allShownSelected ? 'בטל בחירת המוצגים' : `בחר הכל (${shown.length})`}</button>
+                {sel.size > 0 && <button className="btn" onClick={() => setSel(new Set())}>נקה</button>}
+              </div>
+              <div className="selbar-row">
+                <button className="btn" disabled={!sel.size || busy} onClick={() => setBulk(bulk ? null : { mode: 'set', value: '' })}>שנה מחיר</button>
+                <button className={'btn danger' + (confirmDel ? ' confirm' : '')} disabled={!sel.size || busy} onClick={bulkDelete}>
+                  {Icon.trash}<span>{confirmDel ? `לחץ שוב למחיקת ${sel.size}` : 'מחק'}</span>
+                </button>
+              </div>
+              {bulk && (
+                <div className="bulk">
+                  <div className="seg">
+                    <button className={bulk.mode === 'set' ? 'on' : ''} onClick={() => setBulk({ ...bulk, mode: 'set' })}>מחיר חדש</button>
+                    <button className={bulk.mode === 'add' ? 'on' : ''} onClick={() => setBulk({ ...bulk, mode: 'add' })}>‎+/- ₪</button>
+                    <button className={bulk.mode === 'pct' ? 'on' : ''} onClick={() => setBulk({ ...bulk, mode: 'pct' })}>‎+/- %</button>
+                  </div>
+                  <div className="actions" style={{ alignItems: 'center' }}>
+                    <input className="input num" style={{ flex: 1 }} inputMode={bulk.mode === 'set' ? 'numeric' : 'text'} dir="ltr"
+                      placeholder={bulk.mode === 'set' ? '250' : bulk.mode === 'add' ? '20 או ‎-20' : '10 או ‎-5'}
+                      value={bulk.value} onChange={(e) => setBulk({ ...bulk, value: e.target.value.replace(/[^\d.-]/g, '') })} />
+                    <button className="btn primary" disabled={busy || bulk.value === '' || bulk.value === '-' || !sel.size} onClick={bulkApply}>החל על {sel.size}</button>
+                  </div>
+                  {sample && <div className="muted">לדוגמה: {sample.name} <span className="num">{fmt(sample.price)} → {sampleNew == null ? 'לא תקין' : fmt(sampleNew)}</span></div>}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="muted" style={{ margin: '8px 4px' }}>{items.length} פריטים{shown.length !== items.length ? ` · מוצגים ${shown.length}` : ''}</div>
           <div className="card list">
             {shown.length === 0 && <div className="empty">אין פריטים</div>}
-            {shown.slice(0, 200).map(({ it, i }) => (
-              <button key={it.key + i} className="row" onClick={() => setEdit({ ...toForm(it), index: i })}>
-                <span className={'dot ' + freshness(it.updatedAt, cfg).level} />
-                <div className="main">
-                  <div className="t1" style={{ fontSize: 15 }}>{it.name}{kind === 'parts' ? ` · ${REPAIRS.find((r) => r.id === it.partType)?.label || ''}` : ''}</div>
-                  <div className="t2">{[it.variant, it.manual ? 'ידני' : '', daysLabel(freshness(it.updatedAt, cfg).days)].filter(Boolean).join(' · ')}</div>
-                </div>
-                <span className="num" style={{ fontWeight: 700 }}>{fmt(it.price)}</span>
-              </button>
-            ))}
+            {shown.slice(0, 300).map((it) => {
+              const on = sel?.has(it.key);
+              return (
+                <button key={it.key} className={'row' + (on ? ' selected' : '')} onClick={() => (sel ? toggle(it.key) : setEdit({ ...toForm(it), key: it.key }))}>
+                  {sel ? <span className={'check' + (on ? ' on' : '')} aria-checked={!!on} role="checkbox">{on ? '✓' : ''}</span> : <span className={'dot ' + freshness(it.updatedAt, cfg).level} />}
+                  <div className="main">
+                    <div className="t1" style={{ fontSize: 15 }}>{it.name}{kind === 'parts' ? ` · ${REPAIRS.find((r) => r.id === it.partType)?.label || ''}` : ''}</div>
+                    <div className="t2">{[it.variant, it.manual ? 'ידני' : '', daysLabel(freshness(it.updatedAt, cfg).days)].filter(Boolean).join(' · ')}</div>
+                  </div>
+                  <span className="num" style={{ fontWeight: 700 }}>{fmt(it.price)}</span>
+                </button>
+              );
+            })}
           </div>
-          {shown.length > 200 && <div className="muted" style={{ margin: 8 }}>מוצגים 200 ראשונים. חפש כדי לצמצם.</div>}
+          {shown.length > 300 && <div className="muted" style={{ margin: 8 }}>מוצגים 300 ראשונים{sel ? ' ("בחר הכל" בוחר את כל ' + shown.length + ')' : ''}. חפש כדי לצמצם.</div>}
         </>
       )}
     </>

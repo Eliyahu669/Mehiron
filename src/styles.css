@@ -149,3 +149,22 @@ textarea.input { min-height: 180px; resize: vertical; line-height: 1.5; }
 
 .mode-seg { margin: 10px 0 0; }
 .mode-seg button { height: 34px; font-size: 15px; }
+
+/* הגדרות: מצב שמירה אוטומטית */
+.save-state { font-size: 13px; color: var(--text2); min-width: 56px; text-align: left; }
+.save-state.saved { color: #248A3D; }
+.save-state.error { color: var(--red); }
+
+/* בחירה מרובה */
+.selbar { padding: 10px 12px; margin-top: 10px; position: sticky; top: 8px; z-index: 3; }
+.selbar-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.selbar-row + .selbar-row { margin-top: 8px; }
+.selbar-row b { flex: 1; font-size: 15px; }
+.bulk { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+.check { width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--text3); display: grid; place-items: center; flex: none; font-size: 14px; font-weight: 700; color: #fff; }
+.check.on { background: var(--blue); border-color: var(--blue); }
+.row.selected { background: rgba(0, 122, 255, .06); }
+.btn.danger.confirm { background: var(--red); color: #fff; }
+
+/* אייפון מגדיל את המסך כשמקלידים בשדה קטן מ-16px */
+.input.sm { font-size: 16px; }

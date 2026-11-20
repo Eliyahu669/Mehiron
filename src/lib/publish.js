@@ -21,13 +21,13 @@ export function buildPublicCatalog(lists, cfg) {
   const models = cat.models.map((m) => {
     const r = {};
     for (const rep of REPAIRS) {
-      const q = repairQuote(m, rep.id, cat.parts, cfg);
+      const q = repairQuote(m, rep.id, cat.partIndex.get(`${m.mkey}|${rep.id}`) || [], cfg);
       const o = q.options.filter((x) => x.final != null).map((x) => ({ q: x.quality, f: x.final, u: x.part.updatedAt || null }));
       if (o.length) r[rep.id] = { o };
       else if (q.laborOnly != null) r[rep.id] = { o: [], l: q.laborOnly };
     }
     const d = m.hasDevices
-      ? deviceQuotes(m, cat.devices, cfg).filter((x) => x.final != null)
+      ? deviceQuotes(m, cat.deviceIndex.get(m.mkey) || [], cfg).filter((x) => x.final != null)
         .map((x) => ({ n: x.item.name, v: x.item.variant || '', s: x.item.storage || null, f: x.final, u: x.item.updatedAt || null }))
       : [];
     return { k: m.mkey, b: m.brand || null, m: m.model, fa: m.family || null, t: m.tier || null, dk: m.devKind || null, hp: m.hasParts, hd: d.length > 0, r, d };
@@ -69,10 +69,14 @@ export function liteDeviceQuotes(model) {
 
 /** נקודת כניסה אחת לממשק – מלא או מצומצם */
 export function getRepairQuote(model, repair, catalog, cfg, addonIds = []) {
-  return catalog.lite ? liteRepairQuote(model, repair, cfg, addonIds) : repairQuote(model, repair, catalog.parts, cfg, addonIds);
+  if (catalog.lite) return liteRepairQuote(model, repair, cfg, addonIds);
+  const parts = catalog.partIndex ? catalog.partIndex.get(`${model.mkey}|${repair}`) || [] : catalog.parts;
+  return repairQuote(model, repair, parts, cfg, addonIds);
 }
 export function getDeviceQuotes(model, catalog, cfg) {
-  return catalog.lite ? liteDeviceQuotes(model) : deviceQuotes(model, catalog.devices, cfg);
+  if (catalog.lite) return liteDeviceQuotes(model);
+  const devices = catalog.deviceIndex ? catalog.deviceIndex.get(model.mkey) || [] : catalog.devices;
+  return deviceQuotes(model, devices, cfg);
 }
 
 // חתימה פשוטה לזיהוי שינוי (כדי לא לכתוב לשרת בלי צורך)

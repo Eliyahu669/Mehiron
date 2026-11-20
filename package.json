@@ -7,10 +7,13 @@
     "dev": "vite",
     "build": "vite build",
     "build:single": "vite build --mode single",
-    "test": "node tests/run.mjs"
+    "test": "node --test tests/unit.mjs tests/store.test.mjs",
+    "test:private": "node tests/private/run.mjs && node tests/private/pdf.mjs && node tests/private/pricing.mjs",
+    "test:e2e": "python3 tests/e2e.py"
   },
   "dependencies": {
     "firebase": "^13.4.0",
+    "lz-string": "^1.5.0",
     "pdfjs-dist": "^6.5.438",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"

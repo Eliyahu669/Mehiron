@@ -1,5 +1,6 @@
 // מנוע תמחור: חלק + עבודה לתיקונים, עלות + אחוז רווח למכשירים, עיגול לכפולות של 10
 import { LABOR_GROUPS, REPAIRS } from './defaults.js';
+import { tokenize } from './normalize.js';
 
 export function roundPrice(v, cfg) {
   const step = cfg?.rounding?.step || 10;
@@ -14,18 +15,26 @@ export function groupFor(model) {
   return g ? g.id : null;
 }
 
-const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+// השוואה לפי מילים מנורמלות: "אייפון 15" = "iPhone 15", "A54" = "Galaxy A54"
+const BRAND_WORDS = new Set(['galaxy', 'iphone', 'ip', 'apple', 'samsung', 'xiaomi']);
+const canon = (s) => tokenize(s).filter((t) => !BRAND_WORDS.has(t));
 function ruleMatches(rule, modelName) {
-  const m = norm(modelName), r = norm(rule.match);
-  if (!r) return false;
-  return rule.scope === 'model' ? m === r : m === r || m.startsWith(r + ' ');
+  const r = canon(rule.match), m = canon(modelName);
+  if (!r.length) return false;
+  if (rule.scope === 'model') return r.length === m.length && r.every((t, i) => t === m[i]);
+  return r.length <= m.length && r.every((t, i) => t === m[i]);
+}
+
+// איכות חלק: "מקורי סאני" = "סאני מקורי" (ספקים שונים כותבים בסדר שונה)
+export function qualityKey(q) {
+  return String(q || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean).sort().join(' ') || 'סטנדרטי';
 }
 
 /** עלות עבודה לדגם ולסוג תיקון. מחזיר { amount, source } או null אם לא מוגדר */
 export function laborFor(model, repair, cfg) {
   const rules = (cfg.laborRules || []).filter((r) => ruleMatches(r, model.model));
   // דגם מדויק קודם, אחר כך הסדרה עם השם הארוך ביותר
-  rules.sort((a, b) => (a.scope === 'model' ? -1 : 0) - (b.scope === 'model' ? -1 : 0) || norm(b.match).length - norm(a.match).length);
+  rules.sort((a, b) => (a.scope === 'model' ? -1 : 0) - (b.scope === 'model' ? -1 : 0) || canon(b.match).length - canon(a.match).length);
   let group = groupFor(model);
   for (const r of rules) {
     if (r.labor && r.labor[repair] != null && r.labor[repair] !== '') {
@@ -58,15 +67,18 @@ export function repairQuote(model, repair, parts, cfg, addonIds = []) {
   const relevant = parts.filter((p) => p.mkey === model.mkey && p.partType === repair);
   const byQuality = new Map();
   for (const p of relevant) {
-    const q = p.variant || 'סטנדרטי';
-    if (!byQuality.has(q)) byQuality.set(q, []);
-    byQuality.get(q).push(p);
+    const k = qualityKey(p.variant);
+    if (!byQuality.has(k)) byQuality.set(k, []);
+    byQuality.get(k).push(p);
   }
-  const options = [...byQuality.entries()].map(([quality, list]) => {
+  const options = [...byQuality.entries()].map(([qk, list]) => {
     list.sort((a, b) => a.price - b.price);
     const best = list[0];
-    const overrideKey = `${model.mkey}|${repair}|${quality}`;
-    const override = cfg.priceOverrides?.[overrideKey];
+    const quality = best.variant || 'סטנדרטי';
+    const overrideKey = `${model.mkey}|${repair}|${qk}`;
+    const legacyKey = `${model.mkey}|${repair}|${quality}`; // מפתח ישן (לפני איחוד שמות איכות)
+    const ov = cfg.priceOverrides?.[overrideKey] ?? cfg.priceOverrides?.[legacyKey];
+    const override = ov == null || ov === '' ? null : ov;
     const computed = labor ? roundPrice(best.price + labor.amount + addonSum, cfg) : null;
     return {
       quality, part: best, suppliers: list, overrideKey,
@@ -81,7 +93,7 @@ export function repairQuote(model, repair, parts, cfg, addonIds = []) {
 
 export function categoryFor(item, cfg) {
   const rules = (cfg.laborRules || []).filter((r) => r.category && ruleMatches(r, item.model));
-  rules.sort((a, b) => (a.scope === 'model' ? -1 : 0) - (b.scope === 'model' ? -1 : 0) || norm(b.match).length - norm(a.match).length);
+  rules.sort((a, b) => (a.scope === 'model' ? -1 : 0) - (b.scope === 'model' ? -1 : 0) || canon(b.match).length - canon(a.match).length);
   return item.categoryOverride || rules[0]?.category || item.category || 'other';
 }
 
@@ -104,7 +116,8 @@ export function deviceQuotes(model, devices, cfg) {
     list.sort((a, b) => a.price - b.price);
     const best = list[0];
     const margin = marginFor(best, cfg);
-    const override = cfg.priceOverrides?.[best.key];
+    const ov = cfg.priceOverrides?.[best.key];
+    const override = ov == null || ov === '' ? null : ov;
     const computed = margin != null ? roundPrice(best.price * (1 + margin / 100), cfg) : null;
     return {
       item: best, suppliers: list, margin, overrideKey: best.key,
