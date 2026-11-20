@@ -7,6 +7,7 @@ import { fmt, Fresh, Icon, daysLabel } from './ui/util.jsx';
 import ModelSheet from './ui/ModelSheet.jsx';
 import ImportSheet from './ui/ImportSheet.jsx';
 import SettingsSheet from './ui/SettingsSheet.jsx';
+import { useBack } from './ui/useBack.js';
 
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* */ } };
@@ -36,6 +37,12 @@ export default function App({ store }) {
     if (t) { setShareText(t); history.replaceState(null, '', location.pathname); }
   }, []);
   useEffect(() => { if (shareText && auth.role === 'admin') setPanel('import'); }, [shareText, auth.role]);
+
+  const closeImport = () => { setPanel(null); setShareText(''); };
+  const closeSettings = () => { setPanel(null); setFocusItem(null); };
+  useBack(!!open, () => setOpen(null), true);
+  useBack(panel === 'import', closeImport, true);
+  useBack(panel === 'settings' || panel === 'users', closeSettings, true);
 
   const toast = (t) => { setMsg(t); clearTimeout(toast.t); toast.t = setTimeout(() => setMsg(null), 2600); };
   const full = !!data.full;
@@ -143,9 +150,9 @@ export default function App({ store }) {
       {open && <ModelSheet model={open} catalog={catalog} cfg={cfg} customer={showCustomer} isAdmin={isAdmin} onRequest={onRequest} initialRepair={repairPill !== 'devices' ? repairFor : null}
         onClose={() => setOpen(null)} onSaveConfig={store.saveConfig} toast={toast}
         onEditItem={isAdmin ? (f) => { setFocusItem(f); setPanel('settings'); } : null} />}
-      {panel === 'import' && <ImportSheet cfg={cfg} lists={data.lists} initialText={shareText} onClose={() => { setPanel(null); setShareText(''); }}
+      {panel === 'import' && <ImportSheet cfg={cfg} lists={data.lists} initialText={shareText} onClose={closeImport}
         onSaveList={store.savePriceList} onSaveConfig={store.saveConfig} toast={toast} />}
-      {(panel === 'settings' || panel === 'users') && <SettingsSheet cfg={cfg} catalog={catalog} lists={data.lists} store={store} focus={focusItem} initialTab={panel === 'users' ? 'users' : null} requests={requests} onClose={() => { setPanel(null); setFocusItem(null); }} onSaveConfig={store.saveConfig} toast={toast} />}
+      {(panel === 'settings' || panel === 'users') && <SettingsSheet cfg={cfg} catalog={catalog} lists={data.lists} store={store} focus={focusItem} initialTab={panel === 'users' ? 'users' : null} requests={requests} onClose={closeSettings} onSaveConfig={store.saveConfig} toast={toast} />}
       {msg && <div className="toast">{msg}</div>}
       {store.mode === 'cloud' && !customer && (
         <div className="muted" style={{ textAlign: 'center', marginTop: 28 }}>

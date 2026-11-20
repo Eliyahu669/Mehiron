@@ -4,6 +4,7 @@ import { REPAIRS, CATEGORY_LABELS } from '../lib/defaults.js';
 import { searchTokens } from '../lib/normalize.js';
 import { fmt, Icon, daysLabel } from './util.jsx';
 import { freshness } from '../lib/pricing.js';
+import { useBack } from './useBack.js';
 
 // ניהול ידני של פריטי המחירון – מנהל בלבד
 export default function ItemsManager({ cfg, lists, store, toast, focus }) {
@@ -19,6 +20,7 @@ export default function ItemsManager({ cfg, lists, store, toast, focus }) {
     return idx >= 0 ? { ...toForm(lists[focus.supplierId].items[idx]), index: idx } : null;
   });
   const [busy, setBusy] = useState(false);
+  useBack(!!edit, () => setEdit(null));
 
   const shown = useMemo(() => {
     const t = searchTokens(q);
