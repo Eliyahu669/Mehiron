@@ -131,6 +131,58 @@ async def main():
             await pg.go_back(); await pg.wait_for_timeout(600)
             check(pg.url == 'about:blank', f'אחורה שני: יצאנו ({pg.url})')
 
+            print('אקסל: ייצוא, עריכה (כולל הערה בתא מתוכנה אחרת) וייבוא חזרה')
+            import openpyxl
+            from openpyxl.comments import Comment
+            pg3 = await ctx.new_page(); pg3.on('pageerror', lambda e: errs.append(str(e)))
+            await pg3.goto(URL); await pg3.wait_for_timeout(700)
+            await pg3.click('.icon-btn[title="הגדרות"]'); await pg3.click('.sheet .pill:has-text("פריטים")'); await pg3.wait_for_timeout(200)
+            async with pg3.expect_download() as dl_info:
+                await pg3.click('.sheet button:has-text("ייצוא לאקסל")')
+            dl = await dl_info.value
+            xpath = f'{SHOTS}/export.xlsx'; await dl.save_as(xpath)
+            check(dl.suggested_filename.startswith('מחירון-') and dl.suggested_filename.endswith('.xlsx'), f'שם הקובץ: {dl.suggested_filename}')
+            await pg3.wait_for_timeout(200)
+            check('הקובץ ירד' in await pg3.inner_text('.toast'), 'הודעת ייצוא')
+            wb = openpyxl.load_workbook(xpath)
+            check(wb.sheetnames[:2] == ['מחירון תיקונים', 'מחירון מכשירים'], f'גיליונות: {wb.sheetnames}')
+            ws = wb['מחירון תיקונים']; h = {c.value: c.column for c in ws[1]}
+            sup_name = ws.cell(2, h['ספק']).value
+            ws.cell(2, h['מחיר ספק']).value = 999
+            ws.cell(2, h['דגם']).comment = Comment('לבדוק', 'אליהו')
+            deleted = ws.cell(3, h['דגם']).value
+            ws.delete_rows(3, 1)
+            n = ws.max_row + 1
+            for k, v in {'ספק': sup_name, 'דגם': 'Galaxy A99', 'סוג חלק': 'סוללה', 'איכות': 'מקורי', 'מחיר ספק': 123}.items(): ws.cell(n, h[k]).value = v
+            wd = wb['מחירון מכשירים']; hd = {c.value: c.column for c in wd[1]}
+            dev_row = next(r for r in range(2, wd.max_row + 1) if str(wd.cell(r, hd['דגם']).value or '').startswith('iPhone'))
+            dev_model = wd.cell(dev_row, hd['דגם']).value
+            wd.cell(dev_row, hd['מחיר ללקוח']).value = 7777
+            epath = f'{SHOTS}/edited.xlsx'; wb.save(epath)
+            await pg3.set_input_files('.sheet input[type=file]', epath); await pg3.wait_for_timeout(1200)
+            t = await pg3.inner_text('.xl-card') if await pg3.locator('.xl-card').count() else ''
+            check('עודכן פריט אחד' in t and 'נוסף פריט אחד' in t and 'יימחק פריט אחד' in t and 'מחיר ידני ללקוח: 1' in t, f'תצוגה מקדימה: {t[:200]!r}')
+            await pg3.click('.xl-sec.red summary'); await pg3.wait_for_timeout(100)
+            check(deleted in await pg3.inner_text('.xl-sec.red'), f'רשימת המחיקות כוללת את {deleted}')
+            await pg3.screenshot(path=f'{SHOTS}/e2e-excel-preview.png')
+            await back(pg3, 300)
+            check(await pg3.locator('.xl-card').count() == 0 and await pg3.locator('.sheet').count() == 1, 'אחורה סגר את התצוגה המקדימה ונשאר בהגדרות')
+            await pg3.set_input_files('.sheet input[type=file]', epath); await pg3.wait_for_timeout(1200)
+            await pg3.click('.xl-card button:has-text("אשר ושמור")'); await pg3.wait_for_timeout(150)
+            check('לחץ שוב' in await pg3.inner_text('.xl-card'), 'עם מחיקות – נדרשת לחיצה שנייה')
+            await pg3.click('.xl-card button:has-text("לחץ שוב")'); await pg3.wait_for_timeout(600)
+            toast = await pg3.inner_text('.toast'); check('הייבוא נשמר' in toast, f'הודעה: {toast}')
+            check(await pg3.locator('.xl-card').count() == 0, 'התצוגה המקדימה נסגרה')
+            await pg3.click(f'.sheet .pills .pill:has-text("{sup_name}")'); await pg3.fill('input[placeholder="חיפוש פריט…"]', 'a99'); await pg3.wait_for_timeout(250)
+            rows = await pg3.locator('.sheet .card.list .row').all_inner_texts()
+            check(len(rows) == 1 and '123' in rows[0] and 'סוללה' in rows[0], f'הפריט החדש נוסף: {rows}')
+            await pg3.click('text=‹ סגור'); await pg3.wait_for_timeout(300)
+            await pg3.click('.mode-seg button:has-text("מכשירים")'); await pg3.click('.search input'); await pg3.keyboard.type(dev_model, delay=10); await pg3.wait_for_timeout(300)
+            await pg3.click('.card.list .row >> nth=0'); await pg3.wait_for_timeout(300)
+            check('7,777' in await pg3.inner_text('.sheet'), f'מחיר ידני ללקוח מופיע ב-{dev_model}')
+            await back(pg3); await pg3.click('.mode-seg button:has-text("תיקונים")'); await pg3.wait_for_timeout(150)
+            await pg3.close()
+
             print('אין אף רשומת היסטוריה שנוצרה בלי פעולת משתמש')
             # (הדף כבר נסגר; בודקים בהרצה נפרדת קצרה)
             pg2 = await ctx.new_page(); await pg2.goto(URL); await pg2.wait_for_timeout(700)

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { manualItem } from '../lib/parser.js';
 import { REPAIRS, CATEGORY_LABELS } from '../lib/defaults.js';
 import { searchTokens } from '../lib/normalize.js';
@@ -6,9 +6,14 @@ import { fmt, Icon, daysLabel } from './util.jsx';
 import { freshness } from '../lib/pricing.js';
 import { useBack } from './useBack.js';
 import { uniqueKey, bulkPrice, applyBulkPrice } from '../lib/items.js';
+import { buildWorkbook, exportFileName, readWorkbook, planImport, hardenExcelJS } from '../lib/excel.js';
+
+// ExcelJS כבד (כמגה) – נטען רק כשמייצאים או מייבאים
+const loadExcel = async () => { const m = await import('exceljs'); return hardenExcelJS(m.default?.Workbook ? m.default : m); };
+const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 // ניהול ידני של פריטי המחירון – מנהל בלבד
-export default function ItemsManager({ cfg, lists, store, toast, focus }) {
+export default function ItemsManager({ cfg, lists, store, toast, focus, onConfigSaved }) {
   const suppliers = cfg.suppliers || [];
   const [supplierId, setSupplierId] = useState(focus?.supplierId || suppliers[0]?.id);
   const supplier = suppliers.find((s) => s.id === supplierId);
@@ -28,6 +33,73 @@ export default function ItemsManager({ cfg, lists, store, toast, focus }) {
   useBack(sel !== null, () => { setSel(null); setBulk(null); });
   useBack(!!bulk, () => setBulk(null));
   useEffect(() => { if (!confirmDel) return undefined; const t = setTimeout(() => setConfirmDel(false), 4000); return () => clearTimeout(t); }, [confirmDel]);
+
+  // ---- ייצוא / ייבוא אקסל ----
+  const [xl, setXl] = useState(null); // { book, fileName, at } – קובץ שנבחר לייבוא, לפני אישור
+  const [xlBusy, setXlBusy] = useState(''); // '' | 'export' | 'read' | 'save'
+  const [xlConfirm, setXlConfirm] = useState(false);
+  const [saving, setSaving] = useState(null); // התוכנית שנשמרת כרגע (קפואה, כדי שהמסך לא יתעדכן באמצע)
+  const fileRef = useRef(null);
+  useBack(!!xl, () => setXl(null));
+  useEffect(() => { if (!xlConfirm) return undefined; const t = setTimeout(() => setXlConfirm(false), 4000); return () => clearTimeout(t); }, [xlConfirm]);
+  // התצוגה המקדימה מחושבת תמיד מול המצב העדכני של המחירונים
+  const livePlan = useMemo(() => {
+    if (!xl) return null;
+    try { return planImport(xl.book, lists, cfg, xl.at); } catch (e) { return { error: e?.message || String(e) }; }
+  }, [xl, lists, cfg]);
+  const plan = saving || livePlan;
+
+  const onExport = async () => {
+    setXlBusy('export');
+    try {
+      const ExcelJS = await loadExcel();
+      const now = Date.now();
+      const { wb, counts } = buildWorkbook(ExcelJS, lists, cfg, now);
+      const buf = await wb.xlsx.writeBuffer();
+      const url = URL.createObjectURL(new Blob([buf], { type: XLSX_TYPE }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = exportFileName(now);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      toast(`הקובץ ירד · ${counts.repairs} תיקונים · ${counts.devices} מכשירים`);
+    } catch (e) { toast('הייצוא נכשל: ' + (e?.message || e)); }
+    finally { setXlBusy(''); }
+  };
+
+  const onPickFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setXlBusy('read');
+    try {
+      const ExcelJS = await loadExcel();
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(await file.arrayBuffer());
+      setXl({ book: readWorkbook(wb), fileName: file.name, at: Date.now() });
+      setXlConfirm(false); setEdit(null); setSel(null); setBulk(null);
+    } catch { toast('לא ניתן לקרוא את הקובץ – צריך קובץ אקסל בפורמט ‎.xlsx'); }
+    finally { setXlBusy(''); }
+  };
+
+  const onConfirmImport = async () => {
+    if (!plan?.hasChanges) { setXl(null); return; }
+    const s = plan.summary;
+    if (s.deleted > 0 && !xlConfirm) { setXlConfirm(true); return; }
+    setXlConfirm(false);
+    setXlBusy('save');
+    setSaving(plan);
+    try {
+      await store.saveImport({ lists: plan.lists, config: plan.config });
+      if (plan.config) onConfigSaved?.(plan.config);
+      const ov = s.overridesSet + s.overridesCleared;
+      toast(['הייבוא נשמר', s.updated && `עודכנו ${s.updated}`, s.added && `נוספו ${s.added}`, s.deleted && `נמחקו ${s.deleted}`, ov && `מחירים ללקוח ${ov}`].filter(Boolean).join(' · '));
+      setXl(null);
+    } catch (err) { toast('השמירה נכשלה: ' + (err?.message || err)); }
+    finally { setXlBusy(''); setSaving(null); }
+  };
 
   const shown = useMemo(() => {
     const t = searchTokens(q);
@@ -88,8 +160,28 @@ export default function ItemsManager({ cfg, lists, store, toast, focus }) {
   const sample = sel && bulk && bulk.value !== '' ? items.find((x) => sel.has(x.key)) : null;
   const sampleNew = sample ? bulkPrice(sample.price, bulk.mode, bulk.value) : null;
 
+  if (xl && plan) {
+    if (plan.error) {
+      return (
+        <div className="card xl-card">
+          <div className="t1" style={{ fontWeight: 700 }}>לא ניתן לייבא את הקובץ</div>
+          <div className="xl-note warn">{xl.fileName}: {plan.error}</div>
+          <div className="actions"><button className="btn primary" onClick={() => setXl(null)}>סגור</button></div>
+        </div>
+      );
+    }
+    return <XlPreview plan={plan} fileName={xl.fileName} busy={xlBusy === 'save'} confirm={xlConfirm} onConfirm={onConfirmImport} onCancel={() => setXl(null)} />;
+  }
+
   return (
     <>
+      {!edit && !sel && (
+        <div className="xl-bar">
+          <button className="btn" disabled={!!xlBusy} onClick={onExport}>{Icon.download}<span>{xlBusy === 'export' ? 'מכין קובץ…' : 'ייצוא לאקסל'}</span></button>
+          <button className="btn" disabled={!!xlBusy} onClick={() => fileRef.current?.click()}>{Icon.upload}<span>{xlBusy === 'read' ? 'קורא קובץ…' : 'ייבוא מאקסל'}</span></button>
+          <input ref={fileRef} type="file" accept={`.xlsx,${XLSX_TYPE}`} hidden onChange={onPickFile} />
+        </div>
+      )}
       <div className="pills" style={{ paddingTop: 8 }}>
         {suppliers.map((s) => <button key={s.id} className={'pill' + (s.id === supplierId ? ' on' : '')} onClick={() => { setSupplierId(s.id); setEdit(null); setSel(null); setBulk(null); }}>{s.name}</button>)}
       </div>
@@ -187,6 +279,57 @@ export default function ItemsManager({ cfg, lists, store, toast, focus }) {
         </>
       )}
     </>
+  );
+}
+
+// תצוגה מקדימה של ייבוא: מה ישתנה, ואישור (לחיצה שנייה כשיש מחיקות)
+function XlPreview({ plan, fileName, busy, confirm, onConfirm, onCancel }) {
+  const s = plan.summary, d = plan.details;
+  const when = s.exportedAt ? new Date(s.exportedAt).toLocaleString('he-IL', { day: 'numeric', month: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : null;
+  const where = (x) => [x.supplier, x.row ? `שורה ${x.row}` : ''].filter(Boolean).join(' · ');
+  const many = (n, one, other) => (n === 1 ? one : other.replace('#', n));
+  return (
+    <div className="card xl-card">
+      <div className="t1" style={{ fontWeight: 700 }}>ייבוא מאקסל – לפני שמירה</div>
+      <div className="muted">{fileName}{when ? ` · יוצא ב-${when}` : ''}</div>
+      <div className="xl-sum">{plan.hasChanges ? 'אלה השינויים שיישמרו:' : 'לא נמצאו שינויים בקובץ.'}</div>
+      <Sec title={many(s.updated, 'עודכן פריט אחד', 'עודכנו # פריטים')} hint={s.priceChanged ? `${s.priceChanged} במחיר ספק` : ''} rows={d.updated}
+        render={(x) => <><div className="main">{x.name}<div className="sub">{[x.what.length ? `שונה: ${x.what.join(', ')}` : '', where(x)].filter(Boolean).join(' · ')}</div></div>
+          <span className="num">{x.before !== x.after ? `${fmt(x.before)} → ${fmt(x.after)}` : fmt(x.after)}</span></>} />
+      <Sec title={many(s.added, 'נוסף פריט אחד', 'נוספו # פריטים')} rows={d.added}
+        render={(x) => <><div className="main">{x.name}<div className="sub">{where(x)}</div></div><span className="num">{fmt(x.price)}</span></>} />
+      <Sec cls="red" title={many(s.deleted, 'יימחק פריט אחד', 'יימחקו # פריטים')} hint="נמחקו מהקובץ" rows={d.deleted}
+        render={(x) => <><div className="main">{x.name}<div className="sub">{x.supplier}</div></div><span className="num">{fmt(x.price)}</span></>} />
+      <Sec title={`מחיר ידני ללקוח: ${s.overridesSet + s.overridesCleared}`} rows={d.overrides}
+        render={(x) => <><div className="main">{x.name}</div><span className="num">{x.value == null ? 'אוטומטי' : fmt(x.value)}</span></>} />
+      {s.newSuppliers.length > 0 && <div className="xl-note">ספקים חדשים שייווצרו: {s.newSuppliers.join(', ')}</div>}
+      <Sec cls="orange" title={many(s.invalid.length, 'שורה אחת לא תקינה – לא תיובא', '# שורות לא תקינות – לא יובאו')} hint="הפריטים שלהן נשארים כמו שהם" rows={s.invalid}
+        render={(x) => <div className="main">{x.row > 1 ? `שורה ${x.row}` : 'כותרת'} ב"{x.sheet}": {x.reason}{x.name ? <div className="sub">{x.name}</div> : null}</div>} />
+      {s.conflicts.map((c, i) => <div key={'c' + i} className="xl-note warn">{c}</div>)}
+      {s.notes.map((c, i) => <div key={'n' + i} className="xl-note">{c}</div>)}
+      <div className="actions">
+        {plan.hasChanges ? (
+          <>
+            <button className={'btn ' + (confirm ? 'danger confirm' : 'primary')} disabled={busy} onClick={onConfirm}>
+              {busy ? 'שומר…' : confirm ? `לחץ שוב – כולל מחיקת ${s.deleted}` : 'אשר ושמור'}</button>
+            <button className="btn" disabled={busy} onClick={onCancel}>ביטול</button>
+          </>
+        ) : <button className="btn primary" onClick={onCancel}>סגור</button>}
+      </div>
+    </div>
+  );
+}
+
+function Sec({ title, hint, rows, render, cls = '' }) {
+  if (!rows.length) return null;
+  return (
+    <details className={'xl-sec ' + cls}>
+      <summary>{title}{hint ? <span className="muted" style={{ fontWeight: 400 }}>{hint}</span> : null}</summary>
+      <div className="xl-list">
+        {rows.slice(0, 500).map((x, i) => <div key={i} className="xl-row">{render(x)}</div>)}
+        {rows.length > 500 && <div className="muted">ועוד {rows.length - 500}…</div>}
+      </div>
+    </details>
   );
 }
 

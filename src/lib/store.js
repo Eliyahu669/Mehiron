@@ -49,8 +49,8 @@ function localStore(seed) {
   const snapshot = () => {
     const v = viewer();
     if (!previewAs || v?.showCost) return { full: true, config: state.config, lists: state.lists, ready: true };
-    const pub = readCatalogDoc({ z: pack(buildPublicCatalog(state.lists, state.config).models, 'הקטלוג') });
-    return { full: false, pcfg: mergePublicConfig(publicConfig(state.config)), pub: { ...pub, updatedAt: Math.max(0, ...Object.values(state.lists).map((l) => l.updatedAt || 0)) }, ready: true };
+    const built = buildPublicCatalog(state.lists, state.config);
+    return { full: false, pcfg: mergePublicConfig(publicConfig(state.config)), pub: { ...readCatalogDoc({ z: pack(built.models, 'הקטלוג') }), updatedAt: built.updatedAt }, ready: true };
   };
   const auth = () => (previewAs ? { user: { email: previewAs }, role: 'viewer', showCost: !!viewer()?.showCost } : { user: { email: 'מצב מקומי' }, role: 'admin' });
   const persist = () => {
@@ -69,6 +69,16 @@ function localStore(seed) {
     async savePriceList(id, items, meta = {}) {
       pack(items.map(slim)); // אותה בדיקת גודל כמו בענן
       state = { ...state, lists: { ...state.lists, [id]: { items: items.map(slim), updatedAt: Date.now(), ...meta } } };
+      persist();
+    },
+    /** ייבוא מאקסל: כל המחירונים וההגדרות נשמרים יחד (הכול או כלום) */
+    async saveImport({ lists = {}, config = null }) {
+      const next = { ...state.lists };
+      for (const [id, { items, ...meta }] of Object.entries(lists)) {
+        pack(items.map(slim), `המחירון של ${meta.supplierName || id}`);
+        next[id] = { items: items.map(slim), updatedAt: Date.now(), ...meta };
+      }
+      state = { ...state, lists: next, ...(config ? { config: mergeConfig(config) } : {}) };
       persist();
     },
     async publish() { return false; },
@@ -204,6 +214,16 @@ async function cloudStore(firebaseConfig, sdk = null) {
     async savePriceList(id, items, meta = {}) {
       const z = pack(items.map(slim));
       await fs.setDoc(fs.doc(db, 'pricelists', id), clean({ z, v: 2, count: items.length, updatedAt: Date.now(), ...meta }));
+    },
+    /** ייבוא מאקסל: כל המחירונים וההגדרות נכתבים באצווה אחת (הכול או כלום) */
+    async saveImport({ lists = {}, config = null }) {
+      const batch = fs.writeBatch(db);
+      for (const [id, { items, ...meta }] of Object.entries(lists)) {
+        const z = pack(items.map(slim), `המחירון של ${meta.supplierName || id}`);
+        batch.set(fs.doc(db, 'pricelists', id), clean({ z, v: 2, count: items.length, updatedAt: Date.now(), ...meta }));
+      }
+      if (config) batch.set(fs.doc(db, 'app', 'config'), clean(config));
+      await batch.commit();
     },
     /** מנהל בלבד: מפרסם לעובדים קטלוג מחירים סופיים. נכתב רק אם משהו השתנה */
     async publish(lists, cfg) {
