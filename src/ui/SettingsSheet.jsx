@@ -5,9 +5,9 @@ import ItemsManager from './ItemsManager.jsx';
 
 const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
 
-export default function SettingsSheet({ cfg, catalog, lists, store, focus, onClose, onSaveConfig, toast }) {
+export default function SettingsSheet({ cfg, catalog, lists, store, focus, initialTab, requests = [], onClose, onSaveConfig, toast }) {
   const [d, setD] = useState(() => JSON.parse(JSON.stringify(cfg)));
-  const [tab, setTab] = useState(focus ? 'items' : 'labor');
+  const [tab, setTab] = useState(initialTab || (focus ? 'items' : 'labor'));
   const [busy, setBusy] = useState(false);
   const set = (fn) => setD((x) => { const y = JSON.parse(JSON.stringify(x)); fn(y); return y; });
 
@@ -18,7 +18,7 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, onClo
     finally { setBusy(false); }
   };
 
-  const tabs = [['items', 'פריטים'], ['labor', 'עלות עבודה'], ['rules', 'חריגים'], ['margins', 'רווח מכשירים'], ['addons', 'תוספות'], ['suppliers', 'ספקים'], ['general', 'כללי'], ...(store.mode === 'cloud' ? [['users', 'משתמשים']] : [])];
+  const tabs = [['items', 'פריטים'], ['labor', 'עלות עבודה'], ['rules', 'חריגים'], ['margins', 'רווח מכשירים'], ['addons', 'תוספות'], ['suppliers', 'ספקים'], ['general', 'כללי'], ['users', requests.length ? `עובדים (${requests.length})` : 'עובדים']];
 
   return (
     <>
@@ -108,6 +108,8 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, onClo
                   </select>
                 </div>
               </label>
+              <label className="field"><span>מספר וואטסאפ לבקשות פירוט מעובדים</span>
+                <input className="input" inputMode="tel" dir="ltr" value={d.adminPhone || ''} onChange={(e) => set((y) => { y.adminPhone = e.target.value; })} /></label>
               <label className="field"><span>ירוק – מחיר עדכני עד (ימים)</span>
                 <input className="input sm num" inputMode="numeric" value={d.freshness.green} onChange={(e) => set((y) => { y.freshness.green = Number(e.target.value) || 0; })} /></label>
               <label className="field"><span>כתום – עד (ימים). מעבר לזה אדום: דורש וידוא</span>
@@ -127,7 +129,7 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, onClo
             </div>
           )}
 
-          {tab === 'users' && <Users store={store} toast={toast} />}
+          {tab === 'users' && <Users store={store} toast={toast} requests={requests} onClose={onClose} />}
           {tab === 'items' && <ItemsManager cfg={cfg} lists={lists} store={store} toast={toast} focus={focus} />}
         </div>
       </div>
@@ -206,25 +208,59 @@ function Rules({ d, set, catalog }) {
   );
 }
 
-function Users({ store, toast }) {
+function Users({ store, toast, requests, onClose }) {
   const [list, setList] = useState(null);
   const [email, setEmail] = useState('');
+  const [label, setLabel] = useState('');
   const load = () => store.listAllowed().then(setList).catch(() => setList([]));
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [requests.length]);
+  const toggle = async (u) => {
+    await store.setShowCost(u.email, !u.showCost);
+    toast(!u.showCost ? `פירוט פנימי הופעל ל-${u.label || u.email}` : `פירוט פנימי כובה ל-${u.label || u.email}`);
+    load();
+  };
   return (
     <>
-      <div className="muted" style={{ margin: '8px 4px' }}>חשבונות גוגל שמורשים לצפות במחירון (טלפונים של הסניפים). רק אתה יכול לעדכן.</div>
+      {requests.length > 0 && (
+        <>
+          <div className="section-title">בקשות פירוט פתוחות</div>
+          <div className="card list">
+            {requests.map((r) => (
+              <div key={r.id} className="row" style={{ flexWrap: 'wrap' }}>
+                <div className="main"><div className="t1" style={{ fontSize: 15 }}>{r.what}</div>
+                  <div className="t2" dir="auto">{r.email} · {new Date(r.at).toLocaleString('he-IL', { dateStyle: 'short', timeStyle: 'short' })}</div></div>
+                <div className="row-actions">
+                  <button className="btn primary" onClick={async () => { await store.resolveRequest(r.id, true, r.email); toast('אושר: הפירוט הפנימי הופעל לעובד'); load(); }}>אשר</button>
+                  <button className="btn" onClick={() => store.resolveRequest(r.id, false, r.email)}>דחה</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      <div className="section-title">עובדים מורשים</div>
+      <div className="muted" style={{ margin: '0 4px 8px' }}>חשבונות גוגל של הטלפונים בסניפים. כברירת מחדל עובד רואה רק מחיר סופי. "פירוט פנימי" חושף לו גם עלות, ספק ורווח, ואפשר לכבות את זה בכל רגע.</div>
       <div className="card list">
         {list == null && <div className="empty">טוען…</div>}
-        {list?.length === 0 && <div className="empty">עדיין אין משתמשים</div>}
+        {list?.length === 0 && <div className="empty">עדיין אין עובדים</div>}
         {list?.map((u) => (
-          <div key={u.email} className="row"><div className="main"><div className="t1" style={{ fontSize: 15 }} dir="ltr">{u.email}</div>{u.label && <div className="t2">{u.label}</div>}</div>
-            <button className="btn danger" onClick={async () => { await store.removeAllowed(u.email); load(); }}>הסר</button></div>
+          <div key={u.email} className="row" style={{ flexWrap: 'wrap' }}>
+            <div className="main"><div className="t1" style={{ fontSize: 15 }}>{u.label || u.email}</div>{u.label && <div className="t2" dir="ltr" style={{ textAlign: 'right' }}>{u.email}</div>}</div>
+            <label className="switch-row">
+              <span className="muted">פירוט פנימי</span>
+              <button className={'switch' + (u.showCost ? ' on' : '')} role="switch" aria-checked={!!u.showCost} onClick={() => toggle(u)}><span /></button>
+            </label>
+            <div className="row-actions" style={{ width: '100%', justifyContent: 'flex-end' }}>
+              {store.mode === 'local' && <button className="btn" onClick={() => { store.previewAs(u.email); onClose(); }}>צפה כמו העובד</button>}
+              <button className="btn danger" onClick={async () => { await store.removeAllowed(u.email); load(); }}>הסר</button>
+            </div>
+          </div>
         ))}
       </div>
-      <div className="actions">
-        <input className="input" style={{ flex: 1 }} dir="ltr" type="email" placeholder="branch@gmail.com" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <button className="btn primary" disabled={!/.+@.+\..+/.test(email)} onClick={async () => { await store.addAllowed(email); setEmail(''); toast('המשתמש נוסף'); load(); }}>הוסף</button>
+      <div className="card" style={{ padding: 12, marginTop: 12, display: 'grid', gap: 8 }}>
+        <input className="input" dir="ltr" type="email" placeholder="branch@gmail.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <input className="input" placeholder="שם (למשל: סניף כפר סבא)" value={label} onChange={(e) => setLabel(e.target.value)} />
+        <button className="btn primary" disabled={!/.+@.+\..+/.test(email)} onClick={async () => { await store.addAllowed(email, label); setEmail(''); setLabel(''); toast('העובד נוסף'); load(); }}>{Icon.plus}<span>הוסף עובד</span></button>
       </div>
     </>
   );

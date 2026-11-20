@@ -2,11 +2,13 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null && request.auth.token.email != null; }
+    function myEmail() { return request.auth.token.email.lower(); }
     function adminDoc() { return /databases/$(database)/documents/app/admin; }
+    function allowedDoc() { return /databases/$(database)/documents/allowed/$(myEmail()); }
     function isAdmin() { return signedIn() && exists(adminDoc()) && get(adminDoc()).data.uid == request.auth.uid; }
-    function isAllowed() {
-      return isAdmin() || (signedIn() && exists(/databases/$(database)/documents/allowed/$(request.auth.token.email.lower())));
-    }
+    function isAllowed() { return isAdmin() || (signedIn() && exists(allowedDoc())); }
+    // מחירי ספק והגדרות מלאות: רק המנהל, או עובד שהמנהל הדליק לו "פירוט פנימי"
+    function canSeeCost() { return isAdmin() || (isAllowed() && get(allowedDoc()).data.get('showCost', false) == true); }
 
     // המשתמש הראשון שמתחבר נרשם כמנהל. אחרי זה אי אפשר לשנות מהאפליקציה
     match /app/admin {
@@ -14,17 +16,22 @@ service cloud.firestore {
       allow create: if signedIn() && !exists(adminDoc()) && request.resource.data.uid == request.auth.uid;
       allow update, delete: if false;
     }
-    match /app/config {
-      allow read: if isAllowed();
-      allow write: if isAdmin();
-    }
-    match /pricelists/{supplierId} {
-      allow read: if isAllowed();
-      allow write: if isAdmin();
-    }
+    match /app/config { allow read: if canSeeCost(); allow write: if isAdmin(); }
+    match /pricelists/{supplierId} { allow read: if canSeeCost(); allow write: if isAdmin(); }
+
+    // מחירים סופיים בלבד – לכל העובדים המורשים
+    match /app/public { allow read: if isAllowed(); allow write: if isAdmin(); }
+    match /public/catalog { allow read: if isAllowed(); allow write: if isAdmin(); }
+
     match /allowed/{email} {
-      allow read: if isAdmin() || (signedIn() && request.auth.token.email.lower() == email);
+      allow read: if isAdmin() || (signedIn() && myEmail() == email);
       allow write: if isAdmin();
+    }
+
+    // בקשות פירוט: עובד יוצר בקשה בשמו בלבד, רק המנהל רואה ומטפל
+    match /requests/{id} {
+      allow create: if isAllowed() && request.resource.data.email == myEmail() && request.resource.data.status == 'open';
+      allow read, update, delete: if isAdmin();
     }
   }
 }

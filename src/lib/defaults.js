@@ -49,6 +49,7 @@ export const DEFAULT_CONFIG = {
   ],
   margins: { flagship: 8, mid: 15, wearable: 25, accessory: 85, other: null },
   rounding: { step: 10, mode: 'ceil' },
+  adminPhone: '0502272669', // לכאן נשלחות בקשות פירוט מהעובדים
   freshness: { green: 7, orange: 14 },
   priceOverrides: {}, // key → מחיר סופי ידני
   suppliers: [
