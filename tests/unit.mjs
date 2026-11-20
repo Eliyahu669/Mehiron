@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { identify, tokenize } from '../src/lib/normalize.js';
 import { extractPrice, parseMessage, mergeItems, manualItem, detectPartType } from '../src/lib/parser.js';
-import { laborFor, repairQuote, deviceQuotes, roundPrice, qualityKey, categoryFor, freshness } from '../src/lib/pricing.js';
+import { laborFor, repairQuote, deviceQuotes, roundPrice, qualityKey, categoryFor, freshness, afterVat, deviceGroupKey } from '../src/lib/pricing.js';
 import { buildCatalog, activeLists, searchModels, detectRepair } from '../src/lib/catalog.js';
 import { buildPublicCatalog, publicConfig, liteCatalog, getRepairQuote, getDeviceQuotes } from '../src/lib/publish.js';
 import { pack, unpack, readPriceListDoc, readCatalogDoc, MAX_FIELD } from '../src/lib/packing.js';
@@ -247,7 +247,7 @@ test('קטלוג לעובדים: בלי מחירי ספק, ומחירים זהי
   };
   const pub = buildPublicCatalog(lists, cfg);
   const json = JSON.stringify(pub) + JSON.stringify(publicConfig(cfg));
-  for (const secret of ['"price"', 'supplierId', '"raw"', '4000', '"margins"', 'priceOverrides', 'suppliers']) assert.ok(!json.includes(secret), `דליפה: ${secret}`);
+  for (const secret of ['"price"', 'supplierId', '"raw"', '4000', '"margins"', 'priceOverrides', 'suppliers', 'marginOverrides', 'marginMin', 'marginMax']) assert.ok(!json.includes(secret), `דליפה: ${secret}`);
   const full = buildCatalog(lists);
   const lite = liteCatalog({ ...pub, models: unpack(pack(pub.models), []) });
   const pcfg = publicConfig(cfg);
@@ -328,4 +328,33 @@ test('ספק שנמחק מההגדרות לא נספר במחירים; קטגו�
   assert.equal(d.storage, 256);
   assert.equal(d.name, 'iPhone 15 Pro 256GB');
   assert.equal(d.key, 'apple|iphone 15 pro|256|');
+});
+
+test('רווח מכשירים: אחוז עם מינימום/מקסימום בשקלים, סכום קבוע, אחוז לפריט, ומחיר ידני גובר על הכול', () => {
+  const items = mergeItems([], devices('iPhone 15 Pro 256 ₪4100\nGalaxy A55 128 ₪500\niPhone 13 Pro Max 256 ₪3750'));
+  const q = (model, cfg) => deviceQuotes({ mkey: items.find((x) => x.model === model).mkey }, items, cfg)[0];
+  const base = mergeConfig(null);
+  assert.equal(q('iPhone 15 Pro', base).final, 4430); // 4100 + 8% = 4428 → 4430
+  assert.equal(q('Galaxy A55', base).final, 580); // 500 + 15% = 575 → 580
+  assert.equal(q('iPhone 13 Pro Max', base).final, 4050, '3750 + 8% = 4050 בדיוק (בלי שגיאת שבר שהעלתה ל-4060)');
+
+  const lim = mergeConfig({ marginMax: { flagship: 250 }, marginMin: { mid: 150 } });
+  assert.equal(q('iPhone 15 Pro', lim).final, 4350);
+  assert.equal(q('iPhone 15 Pro', lim).limit, 'max');
+  assert.equal(q('Galaxy A55', lim).final, 650);
+  assert.equal(q('Galaxy A55', lim).limit, 'min');
+  const fixed = mergeConfig({ margins: { mid: null }, marginMin: { mid: 200 } });
+  assert.equal(q('Galaxy A55', fixed).final, 700);
+  assert.equal(q('Galaxy A55', fixed).limit, 'fixed');
+  assert.equal(q('Galaxy A55', mergeConfig({ margins: { mid: null } })).final, null, 'בלי אחוז ובלי סכום – אין מחיר');
+
+  const a55 = items.find((x) => x.model === 'Galaxy A55');
+  const own = mergeConfig({ marginMin: { mid: 150 }, marginOverrides: { [deviceGroupKey(a55)]: 20 } });
+  assert.equal(q('Galaxy A55', own).final, 600, 'אחוז לפריט מחליף את הכלל של הקטגוריה (כולל המינימום)');
+  assert.equal(q('Galaxy A55', own).rule.source, 'item');
+  assert.equal(q('Galaxy A55', { ...own, priceOverrides: { [deviceGroupKey(a55)]: 555 } }).final, 555);
+
+  assert.equal(afterVat(330, base), 280); // 330 / 1.18
+  assert.equal(afterVat(236, base), 200);
+  assert.equal(roundPrice(4050.0000000000005, base), 4050);
 });

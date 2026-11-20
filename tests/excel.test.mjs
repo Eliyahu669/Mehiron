@@ -354,6 +354,33 @@ test('אקסל: ייבוא חוזר של אותו קובץ לא משנה שוב 
   assert.equal(p3.hasChanges, false, JSON.stringify(p3.summary));
 });
 
+test('אקסל: עמודת "אחוז רווח" – ייצוא, קביעה, מחיקה, ותא בפורמט אחוזים', async () => {
+  const lists = lists0();
+  const ip = find(lists.dv.items, 'iPhone 15 Pro'), s24 = find(lists.dv.items, 'Galaxy S24');
+  const cfg = { ...cfg0(), marginOverrides: { [deviceGroupKey(ip)]: 5 } };
+  const wb = await exported(lists, cfg);
+  const dev = sheet(wb, SHEET_DEVICES);
+  assert.equal(findRow(dev, { 'דגם': 'iPhone 15 Pro' }).getCell(col(dev, 'אחוז רווח')).value, 5);
+  assert.equal(findRow(dev, { 'דגם': 'iPhone 15 Pro' }).getCell(col(dev, 'מחיר ללקוח')).value, 4200); // 4000 + 5%
+  assert.equal(findRow(dev, { 'דגם': 'Galaxy S24' }).getCell(col(dev, 'אחוז רווח')).value, null);
+  assert.equal(col(sheet(wb, SHEET_REPAIRS), 'מחיר ספק') > 0 && !sheet(wb, SHEET_REPAIRS).getRow(1).values.includes('אחוז רווח'), true, 'רק בגיליון המכשירים');
+  const p0 = await plan(wb, lists, cfg);
+  assert.equal(p0.hasChanges, false);
+
+  setCell(dev, { 'דגם': 'iPhone 15 Pro' }, 'אחוז רווח', null);
+  const cell = findRow(dev, { 'דגם': 'Galaxy S24' }).getCell(col(dev, 'אחוז רווח'));
+  cell.value = 0.12; cell.numFmt = '0%'; // הקלדה של "12%" באקסל
+  const p = await plan(wb, lists, cfg);
+  assert.equal(p.summary.marginsSet, 1);
+  assert.equal(p.summary.marginsCleared, 1);
+  assert.deepEqual(p.config.marginOverrides, { [deviceGroupKey(s24)]: 12 });
+  assert.equal(p.summary.updated, 0);
+
+  setCell(dev, { 'דגם': 'Galaxy S24' }, 'אחוז רווח', 'הרבה');
+  const p2 = await plan(wb, lists, cfg);
+  assert.match(p2.summary.invalid.map((x) => x.reason).join(), /אחוז רווח לא תקין/);
+});
+
 test('אקסל: קריאת מספרים ונפחים', () => {
   assert.equal(parseNum('₪1,200'), 1200);
   assert.equal(parseNum('1200 ש"ח'), 1200);

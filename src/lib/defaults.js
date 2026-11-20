@@ -48,6 +48,11 @@ export const DEFAULT_CONFIG = {
     { id: 'backup-l', label: 'גיבוי / העברת נתונים מעל 30GB', amount: 150, manager: true },
   ],
   margins: { flagship: 8, mid: 15, wearable: 25, accessory: 85, other: null },
+  // רווח מינימלי / מקסימלי בשקלים (כולל מע"מ) לכל קטגוריה. ריק = בלי הגבלה. אחוז ריק + מינימום = סכום קבוע
+  marginMin: {},
+  marginMax: {},
+  marginOverrides: {}, // דגם|נפח|וריאנט → אחוז רווח לפריט (מחליף את הכלל של הקטגוריה)
+  vat: 18, // לחישוב "רווח אחרי מע"מ" בפירוט הפנימי
   rounding: { step: 10, mode: 'ceil' },
   adminPhone: '0502272669', // לכאן נשלחות בקשות פירוט מהעובדים
   freshness: { green: 7, orange: 14 },

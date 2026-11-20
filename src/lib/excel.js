@@ -36,6 +36,7 @@ export const COLS = {
     { key: 'storage', header: 'נפח', width: 9 },
     { key: 'variant', header: 'וריאנט', width: 26 },
     { key: 'category', header: 'קטגוריית רווח', width: 15 },
+    { key: 'margin', header: 'אחוז רווח', width: 10 },
     { key: 'price', header: 'מחיר ספק', width: 11, num: true },
     { key: 'customer', header: 'מחיר ללקוח', width: 12, num: true },
     { key: 'updated', header: 'עודכן', width: 12, date: true },
@@ -50,10 +51,12 @@ const PROMPTS = {
   customer: 'ריק = מחיר אוטומטי. מספר = מחיר ידני ללקוח, לאותו דגם ואיכות אצל כל הספקים. מחיקת המספר מחזירה לאוטומטי.',
   storage: 'למשל 128GB או 1TB. ריק = בלי נפח.',
   category: 'אוטומטי = לפי סוג המכשיר.',
+  margin: 'ריק = לפי הקטגוריה. מספר = אחוז רווח לפריט הזה, לאותו דגם, נפח ווריאנט אצל כל הספקים. מחיקת המספר מחזירה לקטגוריה.',
   id: 'לא לשנות. בשורה חדשה – להשאיר ריק. מחיקת שורה מוחקת את הפריט מהאפליקציה.',
 };
 
 export const idOf = (supplierId, key) => `${supplierId}~${key}`;
+const numOrNull = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
 const partLabel = (id) => REPAIRS.find((r) => r.id === id)?.label || id || '';
 const itemLabel = (it) => [it.name || it.model, it.kind === 'part' ? partLabel(it.partType) : '', it.variant].filter(Boolean).join(' · ');
 // תאריך מקומי (בלי שעה), כדי שאקסל לא יזיז אותו ביום בגלל אזור הזמן
@@ -87,8 +90,12 @@ export function exportRows(lists, cfg) {
       const model = it.model || it.name || '';
       const row = { supplier: s.name, model, variant: it.variant || '', price: it.price, customer, updated: excelDate(it.updatedAt), id: idOf(s.id, it.key) };
       if (kind === 'repairs') row.partType = partLabel(it.partType);
-      else { row.storage = fmtStorage(it.storage) || null; row.category = (it.categoryOverride && CAT_SHORT[it.categoryOverride]) || AUTO; }
-      row.orig = JSON.stringify({ s: s.id, n: s.name, m: model, t: it.partType || null, g: it.storage || null, q: row.variant, k: it.categoryOverride || null, p: it.price, c: customer });
+      else {
+        row.storage = fmtStorage(it.storage) || null;
+        row.category = (it.categoryOverride && CAT_SHORT[it.categoryOverride]) || AUTO;
+        row.margin = numOrNull(cfg.marginOverrides?.[deviceGroupKey(it)]);
+      }
+      row.orig = JSON.stringify({ s: s.id, n: s.name, m: model, t: it.partType || null, g: it.storage || null, q: row.variant, k: it.categoryOverride || null, p: it.price, c: customer, r: row.margin ?? null });
       out[kind].push(row);
     }
   }
@@ -134,6 +141,7 @@ export function buildWorkbook(ExcelJS, lists, cfg, now = Date.now()) {
     } else {
       ws.dataValidations.add(range('storage'), { type: 'any', ...prompt('storage', 'נפח') });
       ws.dataValidations.add(range('category'), { type: 'list', allowBlank: true, showErrorMessage: true, errorTitle: 'קטגוריית רווח', error: 'בחר מהרשימה', formulae: listFormula([AUTO, ...Object.values(CAT_SHORT)]), ...prompt('category', 'קטגוריית רווח') });
+      ws.dataValidations.add(range('margin'), { type: 'decimal', operator: 'greaterThanOrEqual', formulae: [0], allowBlank: true, showErrorMessage: true, errorTitle: 'אחוז רווח', error: 'מספר (0 ומעלה)', ...prompt('margin', 'אחוז רווח') });
     }
   };
   add(SHEET_REPAIRS, 'repairs');
@@ -186,7 +194,7 @@ const str = (v) => (v == null || v instanceof Date ? '' : String(v).replace(/\s+
 export function parseNum(v) {
   if (v == null || v === '') return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;
-  const s = String(v).replace(/ש["״׳']?ח|שקל(ים)?|nis/gi, '').replace(/[₪,\s]/g, '');
+  const s = String(v).replace(/ש["״׳']?ח|שקל(ים)?|nis/gi, '').replace(/[₪,%\s]/g, '');
   if (!s) return null;
   const n = Number(s);
   return Number.isFinite(n) ? n : NaN;
@@ -202,6 +210,8 @@ export function parseStorage(v) {
   const n = Number(m[1]);
   return m[2] && /^(tb|t|טרה)$/.test(m[2]) ? n * 1024 : n;
 }
+
+const isPercentFmt = (f) => typeof f === 'string' && f.replace(/"[^"]*"/g, '').includes('%');
 
 /** קורא חוברת אקסל לשורות. גיליון שלא נמצא = null (לא נוגעים בסוג הזה בכלל) */
 export function readWorkbook(wb) {
@@ -232,6 +242,7 @@ export function readWorkbook(wb) {
       if (n === 1) return;
       const r = { row: n };
       for (const c of COLS[kind]) if (colOf[c.key]) r[c.key] = cellValue(row.getCell(colOf[c.key]).value);
+      if (typeof r.margin === 'number' && isPercentFmt(row.getCell(colOf.margin).numFmt)) r.margin = Math.round(r.margin * 1e6) / 1e4; // "8%" באקסל = 0.08
       if (COLS[kind].some((c) => c.key !== 'orig' && c.key !== 'updated' && str(r[c.key]) !== '')) rows.push(r);
     });
     return { rows, name: ws.name };
@@ -331,12 +342,14 @@ export function planImport(book, lists, cfg, now = Date.now()) {
       }
       const customer = parseNum(r.customer);
       if (Number.isNaN(customer) || (customer != null && customer <= 0)) { bad(`מחיר ללקוח לא תקין: "${str(r.customer)}"`); continue; }
+      const margin = isPart ? null : parseNum(r.margin);
+      if (Number.isNaN(margin) || (margin != null && margin < 0)) { bad(`אחוז רווח לא תקין: "${str(r.margin)}"`); continue; }
 
       // הערכים שיוצאו (מהעמודה המוסתרת; אם חסרה – הערכים הנוכחיים של הפריט)
       const base = orig
-        ? { s: orig.s, n: orig.n ?? supById.get(orig.s)?.name ?? '', m: str(orig.m), t: orig.t || null, g: orig.g || null, q: str(orig.q), k: orig.k || null, p: Number(orig.p), c: orig.c ?? null }
+        ? { s: orig.s, n: orig.n ?? supById.get(orig.s)?.name ?? '', m: str(orig.m), t: orig.t || null, g: orig.g || null, q: str(orig.q), k: orig.k || null, p: Number(orig.p), c: orig.c ?? null, r: orig.r ?? null }
         : known
-          ? { s: known.s.id, n: known.s.name, m: str(known.it.model || known.it.name), t: known.it.partType || null, g: known.it.storage || null, q: str(known.it.variant), k: known.it.categoryOverride || null, p: known.it.price, c: priceOf(known.it) }
+          ? { s: known.s.id, n: known.s.name, m: str(known.it.model || known.it.name), t: known.it.partType || null, g: known.it.storage || null, q: str(known.it.variant), k: known.it.categoryOverride || null, p: known.it.price, c: priceOf(known.it), r: isPart ? null : numOrNull(cfg.marginOverrides?.[deviceGroupKey(known.it)]) }
           : null;
       // ספק: אם השם לא שונה בקובץ – אותו ספק (גם אם בינתיים שמו שונה באפליקציה)
       const sameName = !!base && normName(supCell) === normName(base.n);
@@ -350,8 +363,9 @@ export function planImport(book, lists, cfg, now = Date.now()) {
         category: !isPart && (base.k || null) !== (category || null),
         price: !(Math.abs(base.p - price) < 0.005),
         customer: base.c == null ? customer != null : customer == null || Math.round(customer) !== Math.round(base.c),
+        margin: !isPart && (base.r == null ? margin != null : margin == null || Math.abs(margin - base.r) > 1e-9),
       };
-      entries.push({ r, kind, sheetName, isPart, id, known, sup, supCell, ch, changed: !!ch && Object.values(ch).some(Boolean), v: { model, price, variant, partType, storage, category, customer }, bad });
+      entries.push({ r, kind, sheetName, isPart, id, known, sup, supCell, ch, changed: !!ch && Object.values(ch).some(Boolean), v: { model, price, variant, partType, storage, category, customer, margin }, bad });
     }
   }
 
@@ -365,8 +379,9 @@ export function planImport(book, lists, cfg, now = Date.now()) {
   const listOf = (id) => (work[id] ||= [...(act[id]?.items || [])]);
   const touched = new Set();
   const newSuppliers = [];
-  const det = { updated: [], added: [], deleted: [], overrides: [] };
+  const det = { updated: [], added: [], deleted: [], overrides: [], margins: [] };
   const ovSet = new Map(), ovClear = new Map();
+  const mgSet = new Map(), mgClear = new Map(); // אחוז רווח לפריט
   const n = { updated: 0, priceChanged: 0, added: 0, deleted: 0, gone: 0, dup: 0, exists: 0 };
 
   for (const e of entries) {
@@ -464,6 +479,15 @@ export function planImport(book, lists, cfg, now = Date.now()) {
         else if (prev.value !== val) conflicts.push(`${itemLabel(item)}: שני מחירים שונים ללקוח (שורות ${prev.row} ו-${r.row} ב"${e.sheetName}") – נקבע ${prev.value}`);
       } else if (!ovClear.has(gk)) ovClear.set(gk, { item });
     }
+    // אחוז רווח לפריט (מכשירים) – גם הוא לכל הקבוצה
+    if (!isPart && (ch ? ch.margin : v.margin != null)) {
+      const gk = deviceGroupKey(item);
+      if (v.margin != null) {
+        const prev = mgSet.get(gk);
+        if (!prev) mgSet.set(gk, { value: v.margin, row: r.row, item });
+        else if (prev.value !== v.margin) conflicts.push(`${itemLabel(item)}: שני אחוזי רווח שונים (שורות ${prev.row} ו-${r.row} ב"${e.sheetName}") – נקבע ${prev.value}%`);
+      } else if (!mgClear.has(gk)) mgClear.set(gk, { item });
+    }
   }
   if (n.gone) notes.push(`${n.gone} שורות דולגו – הפריטים שלהן כבר לא קיימים באפליקציה (נמחקו או הוחלפו מאז הייצוא) ולא שונו בקובץ`);
   if (n.dup) notes.push(`${n.dup} שורות כפולות (זהות לשורה אחרת בקובץ) דולגו`);
@@ -507,15 +531,31 @@ export function planImport(book, lists, cfg, now = Date.now()) {
     det.overrides.push({ name: itemLabel(o.item), value: null });
   }
 
+  // ---- אחוזי רווח לפריטים ----
+  const mo = { ...(cfg.marginOverrides || {}) };
+  let mSet = 0, mClear = 0;
+  for (const [gk, o] of mgSet) {
+    if (numOrNull(mo[gk]) === o.value) continue;
+    mo[gk] = o.value;
+    mSet++;
+    det.margins.push({ name: itemLabel(o.item), value: o.value });
+  }
+  for (const [gk, o] of mgClear) {
+    if (mgSet.has(gk) || mo[gk] == null) continue;
+    delete mo[gk];
+    mClear++;
+    det.margins.push({ name: itemLabel(o.item), value: null });
+  }
+
   const outLists = {};
   for (const id of touched) outLists[id] = { items: work[id], supplierName: supById.get(id)?.name || id, updatedAt: act[id]?.updatedAt || now };
-  const cfgChanged = newSuppliers.length > 0 || setCount > 0 || clearCount > 0;
+  const cfgChanged = newSuppliers.length > 0 || setCount > 0 || clearCount > 0 || mSet > 0 || mClear > 0;
   return {
     lists: outLists,
-    config: cfgChanged ? { ...cfg, suppliers, priceOverrides: po } : null,
+    config: cfgChanged ? { ...cfg, suppliers, priceOverrides: po, marginOverrides: mo } : null,
     summary: {
       updated: n.updated, priceChanged: n.priceChanged, added: n.added, deleted: n.deleted,
-      overridesSet: setCount, overridesCleared: clearCount, newSuppliers, invalid, notes, conflicts,
+      overridesSet: setCount, overridesCleared: clearCount, marginsSet: mSet, marginsCleared: mClear, newSuppliers, invalid, notes, conflicts,
       exportedAt: book.manifest?.exportedAt || null,
     },
     details: det,

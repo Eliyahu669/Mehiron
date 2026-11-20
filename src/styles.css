@@ -188,3 +188,11 @@ textarea.input { min-height: 180px; resize: vertical; line-height: 1.5; }
 .xl-row .sub { color: var(--text2); font-size: 12px; }
 .xl-note { color: var(--text2); font-size: 13px; margin: 6px 0; }
 .xl-note.warn { color: var(--orange); }
+
+/* רווח מכשירים: אחוז + מינימום/מקסימום, ואחוז לפריט */
+.margin-row { padding: 10px 0; border-top: 1px solid var(--line); }
+.margin-row .lbl { font-size: 15px; margin-bottom: 6px; }
+.margin-inputs, .dev-admin { display: flex; gap: 6px 14px; flex-wrap: wrap; align-items: center; font-size: 14px; color: var(--text2); }
+.margin-inputs label, .dev-admin label { display: flex; align-items: center; gap: 4px; }
+.margin-inputs .input.sm, .dev-admin .input.sm { width: 72px; }
+.dev-admin { width: 100%; margin-top: 8px; }

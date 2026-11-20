@@ -6,7 +6,7 @@ export function roundPrice(v, cfg) {
   const step = cfg?.rounding?.step || 10;
   const mode = cfg?.rounding?.mode || 'ceil';
   const f = mode === 'round' ? Math.round : mode === 'floor' ? Math.floor : Math.ceil;
-  return f(v / step) * step;
+  return f(Math.round((v / step) * 1e6) / 1e6) * step; // בלי שגיאות שבר עשרוני (4050.0000000000005 לא מתעגל ל-4060)
 }
 
 export function groupFor(model) {
@@ -101,11 +101,32 @@ export function categoryFor(item, cfg) {
   return item.categoryOverride || rules[0]?.category || item.category || 'other';
 }
 
-export function marginFor(item, cfg) {
+const num = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+
+/** כלל הרווח למכשיר: אחוז לפריט (אם נקבע – מחליף הכול), אחרת אחוז הקטגוריה עם מינימום/מקסימום בשקלים */
+export function marginRule(item, cfg) {
   const cat = categoryFor(item, cfg);
-  const m = cfg.margins?.[cat];
-  return m == null || m === '' ? null : Number(m);
+  const own = num(cfg.marginOverrides?.[deviceGroupKey(item)]);
+  if (own != null) return { pct: own, min: null, max: null, source: 'item', cat };
+  return { pct: num(cfg.margins?.[cat]), min: num(cfg.marginMin?.[cat]), max: num(cfg.marginMax?.[cat]), source: 'category', cat };
 }
+
+export function marginFor(item, cfg) {
+  return marginRule(item, cfg).pct;
+}
+
+/** רווח בשקלים לפי הכלל. limit: 'min' / 'max' (הוגבל) או 'fixed' (סכום קבוע בלי אחוז). null = אין כלל */
+export function profitFor(cost, rule) {
+  let amount = rule.pct != null ? (cost * rule.pct) / 100 : rule.min ?? rule.max ?? null;
+  if (amount == null) return null;
+  let limit = rule.pct == null ? 'fixed' : null;
+  if (rule.min != null && amount < rule.min) { amount = rule.min; limit = 'min'; }
+  if (rule.max != null && amount > rule.max) { amount = rule.max; limit = 'max'; }
+  return { amount, limit };
+}
+
+/** כמה נשאר מהרווח אחרי מע"מ (המחירים כוללים מע"מ, ולכן למדינה הולך vat/(100+vat) מהרווח) */
+export const afterVat = (profit, cfg) => (profit == null ? null : Math.round(profit / (1 + (num(cfg.vat) ?? 18) / 100)));
 
 /** הצעת מחיר למכשיר למכירה: לכל וריאנט – הספק הזול ביותר */
 export function deviceQuotes(model, devices, cfg) {
@@ -119,13 +140,14 @@ export function deviceQuotes(model, devices, cfg) {
   return [...groups.values()].map((list) => {
     list.sort((a, b) => a.price - b.price);
     const best = list[0];
-    const margin = marginFor(best, cfg);
+    const rule = marginRule(best, cfg);
+    const pr = profitFor(best.price, rule);
     const overrideKey = deviceGroupKey(best);
     const ov = cfg.priceOverrides?.[overrideKey] ?? cfg.priceOverrides?.[best.key];
     const override = ov == null || ov === '' ? null : ov;
-    const computed = margin != null ? roundPrice(best.price * (1 + margin / 100), cfg) : null;
+    const computed = pr ? roundPrice(best.price + pr.amount, cfg) : null;
     return {
-      item: best, suppliers: list, margin, overrideKey, legacyKey: best.key,
+      item: best, suppliers: list, margin: rule.pct, rule, limit: pr?.limit ?? null, overrideKey, legacyKey: best.key,
       final: override != null ? Number(override) : computed,
       computed, overridden: override != null,
       profit: (override != null ? Number(override) : computed) != null ? (override != null ? Number(override) : computed) - best.price : null,
