@@ -1,15 +1,16 @@
 import React, { useMemo, useState } from 'react';
 import { REPAIRS, CATEGORY_LABELS } from '../lib/defaults.js';
-import { repairQuote, deviceQuotes, freshness, categoryFor } from '../lib/pricing.js';
+import { freshness, categoryFor } from '../lib/pricing.js';
+import { getRepairQuote, getDeviceQuotes } from '../lib/publish.js';
 import { fmt, Price, Fresh, waLink, copyText, daysLabel, Icon } from './util.jsx';
 
-export default function ModelSheet({ model, catalog, cfg, customer, isAdmin, initialRepair, onClose, onSaveConfig, toast, onEditItem }) {
+export default function ModelSheet({ model, catalog, cfg, customer, isAdmin, initialRepair, onClose, onSaveConfig, toast, onEditItem, onRequest }) {
   const hasRepairs = model.devKind === 'phone' || model.hasParts;
   const [tab, setTab] = useState(initialRepair || hasRepairs ? 'repairs' : 'devices');
   const sup = useMemo(() => Object.fromEntries((cfg.suppliers || []).map((s) => [s.id, s])), [cfg.suppliers]);
 
   const order = initialRepair ? [initialRepair, ...REPAIRS.map((r) => r.id).filter((r) => r !== initialRepair)] : REPAIRS.map((r) => r.id);
-  const quotes = order.map((r) => repairQuote(model, r, catalog.parts, cfg));
+  const quotes = order.map((r) => getRepairQuote(model, r, catalog, cfg));
   const shown = quotes.filter((q) => q.options.length || q.labor);
   const missing = quotes.filter((q) => !q.options.length && !q.labor);
 
@@ -33,7 +34,7 @@ export default function ModelSheet({ model, catalog, cfg, customer, isAdmin, ini
             <>
               {shown.map((q, i) => (
                 <QuoteCard key={q.repair} q={q} model={model} cfg={cfg} sup={sup} customer={customer} isAdmin={isAdmin}
-                  catalogParts={catalog.parts} defaultOpen={i === 0 || !!initialRepair && q.repair === initialRepair} onSaveConfig={onSaveConfig} toast={toast} onEditItem={onEditItem} />
+                  catalog={catalog} onRequest={onRequest} defaultOpen={i === 0 || !!initialRepair && q.repair === initialRepair} onSaveConfig={onSaveConfig} toast={toast} onEditItem={onEditItem} />
               ))}
               {!shown.length && <div className="card empty">אין עדיין מחיר עבודה או חלק לדגם הזה.{isAdmin && <><br />אפשר להגדיר עלות עבודה לסדרה או לדגם בהגדרות.</>}</div>}
               {!customer && missing.length > 0 && shown.length > 0 && (
@@ -41,19 +42,19 @@ export default function ModelSheet({ model, catalog, cfg, customer, isAdmin, ini
               )}
             </>
           )}
-          {tab === 'devices' && <Devices model={model} catalog={catalog} cfg={cfg} sup={sup} customer={customer} isAdmin={isAdmin} onSaveConfig={onSaveConfig} toast={toast} onEditItem={onEditItem} />}
+          {tab === 'devices' && <Devices model={model} catalog={catalog} cfg={cfg} sup={sup} customer={customer} isAdmin={isAdmin} onSaveConfig={onSaveConfig} toast={toast} onEditItem={onEditItem} onRequest={onRequest} />}
         </div>
       </div>
     </>
   );
 }
 
-function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalogParts, defaultOpen, onSaveConfig, toast, onEditItem }) {
+function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalog, defaultOpen, onSaveConfig, toast, onEditItem, onRequest }) {
   const [open, setOpen] = useState(defaultOpen);
   const [addonIds, setAddonIds] = useState([]);
   const [showInternal, setShowInternal] = useState(false);
   const applicable = (cfg.addons || []).filter((a) => (!a.repairs || a.repairs.includes(q0.repair)) && (!a.families || a.families.includes(model.family)));
-  const q = addonIds.length ? repairQuote(model, q0.repair, catalogParts, cfg, addonIds) : q0;
+  const q = addonIds.length ? getRepairQuote(model, q0.repair, catalog, cfg, addonIds) : q0;
   const best = q.options[0];
   const headline = best ? best.final : null;
 
@@ -145,6 +146,7 @@ function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalogParts, de
       <div className="actions">
         <a className="btn green" href={waLink('', quoteText())} target="_blank" rel="noreferrer">{Icon.wa}<span>שלח ללקוח</span></a>
         <button className="btn" onClick={async () => toast((await copyText(quoteText())) ? 'ההצעה הועתקה' : 'לא ניתן להעתיק במכשיר הזה')}>{Icon.copy}<span>העתק</span></button>
+        {onRequest && <RequestBtn cfg={cfg} what={`${model.model} – ${q.label}`} onRequest={onRequest} />}
         {!customer && !best && (
           <a className="btn" href={waLink('', `היי, כמה עולה ויש במלאי ${q.label} ל-${model.model}?`)} target="_blank" rel="noreferrer">{Icon.box}<span>בקש מחיר מספק</span></a>
         )}
@@ -161,9 +163,9 @@ function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalogParts, de
   );
 }
 
-function Devices({ model, catalog, cfg, sup, customer, isAdmin, onSaveConfig, toast, onEditItem }) {
+function Devices({ model, catalog, cfg, sup, customer, isAdmin, onSaveConfig, toast, onEditItem, onRequest }) {
   const [showInternal, setShowInternal] = useState(false);
-  const list = deviceQuotes(model, catalog.devices, cfg);
+  const list = getDeviceQuotes(model, catalog, cfg);
   if (!list.length) return <div className="card empty">אין מכשיר כזה במחירוני הספקים.</div>;
   const noMargin = list.some((d) => d.margin == null && !d.overridden);
   const textFor = (d) => `${d.item.name}${d.item.variant ? ' (' + d.item.variant + ')' : ''}: ${fmt(d.final)}`;
@@ -200,6 +202,17 @@ function Devices({ model, catalog, cfg, sup, customer, isAdmin, onSaveConfig, to
       })}
       {noMargin && !customer && <div className="warn">לא הוגדר אחוז רווח לקטגוריה "{CATEGORY_LABELS[categoryFor(list[0].item, cfg)]}". אפשר להגדיר בהגדרות.</div>}
       {!customer && <button className="disc" onClick={() => setShowInternal((v) => !v)}>{showInternal ? 'הסתר פירוט פנימי' : 'הצג פירוט פנימי'}</button>}
+      {onRequest && <div className="actions"><RequestBtn cfg={cfg} what={`${model.model} – מכשיר למכירה`} onRequest={onRequest} /></div>}
     </div>
+  );
+}
+
+// עובד בלי הרשאה: בקשת פירוט – נרשמת במערכת ונשלחת למנהל בוואטסאפ
+function RequestBtn({ cfg, what, onRequest }) {
+  const text = `בקשה לפירוט פנימי (עלות חלק): ${what}`;
+  return (
+    <a className="btn" href={waLink(cfg.adminPhone || '', text)} target="_blank" rel="noreferrer" onClick={() => onRequest(what)}>
+      {Icon.eye}<span>בקש פירוט</span>
+    </a>
   );
 }
