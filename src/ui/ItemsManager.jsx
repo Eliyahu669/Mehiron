@@ -94,8 +94,8 @@ export default function ItemsManager({ cfg, lists, store, toast, focus, onConfig
     try {
       await store.saveImport({ lists: plan.lists, config: plan.config });
       if (plan.config) onConfigSaved?.(plan.config);
-      const ov = s.overridesSet + s.overridesCleared;
-      toast(['הייבוא נשמר', s.updated && `עודכנו ${s.updated}`, s.added && `נוספו ${s.added}`, s.deleted && `נמחקו ${s.deleted}`, ov && `מחירים ללקוח ${ov}`].filter(Boolean).join(' · '));
+      const ov = s.overridesSet + s.overridesCleared, mg = s.marginsSet + s.marginsCleared;
+      toast(['הייבוא נשמר', s.updated && `עודכנו ${s.updated}`, s.added && `נוספו ${s.added}`, s.deleted && `נמחקו ${s.deleted}`, ov && `מחירים ללקוח ${ov}`, mg && `אחוזי רווח ${mg}`].filter(Boolean).join(' · '));
       setXl(null);
     } catch (err) { toast('השמירה נכשלה: ' + (err?.message || err)); }
     finally { setXlBusy(''); setSaving(null); }
@@ -302,6 +302,8 @@ function XlPreview({ plan, fileName, busy, confirm, onConfirm, onCancel }) {
         render={(x) => <><div className="main">{x.name}<div className="sub">{x.supplier}</div></div><span className="num">{fmt(x.price)}</span></>} />
       <Sec title={`מחיר ידני ללקוח: ${s.overridesSet + s.overridesCleared}`} rows={d.overrides}
         render={(x) => <><div className="main">{x.name}</div><span className="num">{x.value == null ? 'אוטומטי' : fmt(x.value)}</span></>} />
+      <Sec title={`אחוז רווח לפריט: ${s.marginsSet + s.marginsCleared}`} rows={d.margins}
+        render={(x) => <><div className="main">{x.name}</div><span className="num">{x.value == null ? 'לפי הקטגוריה' : `${x.value}%`}</span></>} />
       {s.newSuppliers.length > 0 && <div className="xl-note">ספקים חדשים שייווצרו: {s.newSuppliers.join(', ')}</div>}
       <Sec cls="orange" title={many(s.invalid.length, 'שורה אחת לא תקינה – לא תיובא', '# שורות לא תקינות – לא יובאו')} hint="הפריטים שלהן נשארים כמו שהם" rows={s.invalid}
         render={(x) => <div className="main">{x.row > 1 ? `שורה ${x.row}` : 'כותרת'} ב"{x.sheet}": {x.reason}{x.name ? <div className="sub">{x.name}</div> : null}</div>} />

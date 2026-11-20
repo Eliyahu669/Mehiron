@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { REPAIRS, CATEGORY_LABELS } from '../lib/defaults.js';
-import { freshness, categoryFor } from '../lib/pricing.js';
+import { freshness, categoryFor, afterVat } from '../lib/pricing.js';
 import { getRepairQuote, getDeviceQuotes } from '../lib/publish.js';
 import { fmt, Price, Fresh, waLink, copyText, daysLabel, Icon } from './util.jsx';
 
@@ -119,7 +119,7 @@ function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalog, default
           {q.addons.length > 0 && <div>תוספות: <b className="num">{fmt(q.addons.reduce((s, a) => s + a.amount, 0))}</b></div>}
           {q.options.map((o) => (
             <div key={o.quality} style={{ marginTop: 6 }}>
-              <div><b>{o.quality}</b> · רווח <b className="num">{fmt(o.profit)}</b></div>
+              <div><b>{o.quality}</b> · רווח <b className="num">{fmt(o.profit)}</b>{o.profit != null && <> · אחרי מע"מ <span className="num">{fmt(afterVat(o.profit, cfg))}</span></>}</div>
               {o.suppliers.map((p, j) => (
                 <div className="sup-row" key={j}>
                   <span>{j === 0 ? '★ ' : ''}{sup[p.supplierId]?.name || p.supplierId} · {daysLabel(freshness(p.updatedAt, cfg).days)}{p.prevPrice != null ? ` · קודם ${fmt(p.prevPrice)}` : ''}</span>
@@ -163,7 +163,7 @@ function Devices({ model, storage, catalog, cfg, sup, customer, isAdmin, onSaveC
   const all = getDeviceQuotes(model, catalog, cfg);
   const list = storage && all.some((d) => d.item.storage === storage) ? all.filter((d) => d.item.storage === storage) : all;
   if (!list.length) return <div className="card empty">אין מכשיר כזה במחירוני הספקים.</div>;
-  const noMargin = list.some((d) => d.margin == null && !d.overridden);
+  const noMargin = list.some((d) => d.final == null && !d.overridden);
   const textFor = (d) => `${d.item.name}${d.item.variant ? ' (' + d.item.variant + ')' : ''}: ${fmt(d.final)}`;
   const setOverride = async (key, val, legacy) => {
     const po = { ...(cfg.priceOverrides || {}) };
@@ -172,6 +172,20 @@ function Devices({ model, storage, catalog, cfg, sup, customer, isAdmin, onSaveC
     await onSaveConfig({ ...cfg, priceOverrides: po });
     toast(val === '' ? 'המחיר הידני הוסר' : 'נשמר מחיר ידני');
   };
+  // אחוז רווח לפריט: לאותו דגם, נפח ווריאנט אצל כל הספקים. ריק = לפי הקטגוריה
+  const setMargin = async (key, val) => {
+    const v = String(val).replace('%', '').trim();
+    if (v !== '' && !(Number(v) >= 0)) { toast('אחוז רווח לא תקין'); return; }
+    const mo = { ...(cfg.marginOverrides || {}) };
+    if (v === '') delete mo[key]; else mo[key] = Number(v);
+    await onSaveConfig({ ...cfg, marginOverrides: mo });
+    toast(v === '' ? 'אחוז הרווח לפריט הוסר – לפי הקטגוריה' : `נשמר: ${Number(v)}% רווח לפריט`);
+  };
+  const howText = (d) => (d.overridden ? 'מחיר ידני' : [
+    d.rule?.pct != null ? `${d.rule.pct}%${d.rule.source === 'item' ? ' לפריט' : ''}` : null,
+    { min: 'מינימום', max: 'מקסימום', fixed: 'סכום קבוע' }[d.limit],
+  ].filter(Boolean).join(', '));
+  const profitText = (d) => (d.profit == null ? '' : ` · רווח ${fmt(d.profit)}${howText(d) ? ` (${howText(d)})` : ''} · אחרי מע"מ ${fmt(afterVat(d.profit, cfg))}`);
   return (
     <div className="card quote">
       {list.map((d, i) => {
@@ -180,7 +194,7 @@ function Devices({ model, storage, catalog, cfg, sup, customer, isAdmin, onSaveC
         return (
           <div key={i} className="opt" style={{ flexWrap: 'wrap' }}>
             <div className="q">{d.item.name}<span className="sub">{d.item.variant}</span>
-              {!customer && showInternal && <span className="sub">עלות {fmt(d.item.price)} · {s?.name || d.item.supplierId}{d.margin != null ? ` · רווח ${d.margin}%` : ''} · {daysLabel(f.days)}{d.item.prevPrice != null ? ` · קודם ${fmt(d.item.prevPrice)}` : ''}{d.overridden ? ' · מחיר ידני' : ''}</span>}
+              {!customer && showInternal && <span className="sub">עלות {fmt(d.item.price)} · {s?.name || d.item.supplierId}{profitText(d)} · {daysLabel(f.days)}{d.item.prevPrice != null ? ` · קודם ${fmt(d.item.prevPrice)}` : ''}</span>}
             </div>
             <span className={'dot ' + f.level} />
             <span className="p num">{fmt(d.final)}</span>
@@ -190,8 +204,15 @@ function Devices({ model, storage, catalog, cfg, sup, customer, isAdmin, onSaveC
                 <a className="btn" style={{ height: 32 }} href={waLink(s?.phone || '', `היי, יש במלאי ${d.item.name} ${d.item.variant || ''}?`)} target="_blank" rel="noreferrer">{Icon.box}<span>בדוק מלאי</span></a>
                 <a className="btn" style={{ height: 32 }} href={waLink('', textFor(d))} target="_blank" rel="noreferrer">{Icon.wa}<span>שלח</span></a>
                 {onEditItem && <button className="btn" style={{ height: 32 }} onClick={() => onEditItem({ supplierId: d.item.supplierId, key: d.item.key })}>ערוך פריט</button>}
-                {isAdmin && <input className="input sm num" inputMode="numeric" defaultValue={d.overridden ? d.final : ''} placeholder="ידני"
-                  onBlur={(e) => e.target.value !== String(d.overridden ? d.final : '') && setOverride(d.overrideKey, e.target.value, d.legacyKey)} />}
+              </div>
+            )}
+            {!customer && showInternal && isAdmin && (
+              <div className="dev-admin">
+                <label>מחיר ידני <input className="input sm num" inputMode="numeric" defaultValue={d.overridden ? d.final : ''} placeholder="אוטומטי"
+                  onBlur={(e) => e.target.value !== String(d.overridden ? d.final : '') && setOverride(d.overrideKey, e.target.value, d.legacyKey)} /></label>
+                <label>רווח לפריט <input className="input sm num" inputMode="decimal" defaultValue={d.rule?.source === 'item' ? d.rule.pct : ''}
+                  placeholder={cfg.margins?.[categoryFor(d.item, cfg)] ?? ''}
+                  onBlur={(e) => e.target.value !== String(d.rule?.source === 'item' ? d.rule.pct : '') && setMargin(d.overrideKey, e.target.value)} /> %</label>
               </div>
             )}
           </div>

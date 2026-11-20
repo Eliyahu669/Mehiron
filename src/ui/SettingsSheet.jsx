@@ -68,14 +68,29 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
 
           {tab === 'margins' && (
             <div className="card" style={{ padding: 14 }}>
-              <div className="muted">אחוז רווח על מחיר הספק למכשירים למכירה. ריק = לא מוצג מחיר ללקוח.</div>
+              <div className="muted">רווח על מחיר הספק למכשירים למכירה: אחוז, ואפשר גם מינימום ומקסימום ברווח בשקלים (כולל מע"מ). שדה ריק = בלי הגבלה. בלי אחוז ועם מינימום = סכום קבוע. בלי אחוז ובלי סכום – לא מוצג מחיר ללקוח.</div>
               {Object.keys(CATEGORY_LABELS).map((k) => (
-                <label key={k} className="field" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{ flex: 1, margin: 0, fontSize: 15, color: 'var(--text)' }}>{CATEGORY_LABELS[k]}</span>
-                  <input className="input sm num" inputMode="decimal" value={d.margins[k] ?? ''} onChange={(e) => set((y) => { y.margins[k] = numOrNull(e.target.value); })} /> %
-                </label>
+                <div key={k} className="margin-row">
+                  <div className="lbl">{CATEGORY_LABELS[k]}</div>
+                  <div className="margin-inputs">
+                    <label>אחוז <input className="input sm num" inputMode="decimal" value={d.margins[k] ?? ''} onChange={(e) => set((y) => { y.margins[k] = numOrNull(e.target.value); })} /> %</label>
+                    <label>מינימום <input className="input sm num" inputMode="numeric" value={d.marginMin?.[k] ?? ''} onChange={(e) => set((y) => { y.marginMin = { ...(y.marginMin || {}), [k]: numOrNull(e.target.value) }; })} /> ₪</label>
+                    <label>מקסימום <input className="input sm num" inputMode="numeric" value={d.marginMax?.[k] ?? ''} onChange={(e) => set((y) => { y.marginMax = { ...(y.marginMax || {}), [k]: numOrNull(e.target.value) }; })} /> ₪</label>
+                  </div>
+                </div>
               ))}
-              <div className="muted">דגל: כל האייפונים, Galaxy S, Galaxy Z, Note, אייפד, Galaxy Tab S ו-AirTag. ביניים: שאר הטלפונים והטאבלטים. אפשר לשנות קטגוריה לסדרה או לדגם בלשונית "חריגים".</div>
+              <div className="muted">דגל: כל האייפונים, Galaxy S, Galaxy Z, Note, אייפד, Galaxy Tab S ו-AirTag. ביניים: שאר הטלפונים והטאבלטים. אפשר לשנות קטגוריה לסדרה או לדגם בלשונית "חריגים". אחוז רווח לפריט מסוים קובעים במסך הדגם (פירוט פנימי) או בעמודה "אחוז רווח" באקסל, והוא מחליף את הכלל של הקטגוריה.</div>
+              {Object.keys(d.marginOverrides || {}).length > 0 && (
+                <>
+                  <div className="section-title">אחוזי רווח לפריטים ({Object.keys(d.marginOverrides).length})</div>
+                  {Object.entries(d.marginOverrides).map(([k, v]) => (
+                    <div key={k} className="sup-row" style={{ padding: '6px 0', borderTop: '1px solid var(--line)' }}>
+                      <span style={{ fontSize: 13 }}>{k.split('|').filter(Boolean).slice(1).join(' · ')}</span>
+                      <span><span className="num">{v}%</span> <button className="btn danger" style={{ height: 28 }} onClick={() => set((y) => { delete y.marginOverrides[k]; })}>הסר</button></span>
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
           )}
 
@@ -120,6 +135,8 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
                   </select>
                 </div>
               </label>
+              <label className="field"><span>מע"מ (%) – לחישוב "רווח אחרי מע"מ" בפירוט הפנימי</span>
+                <input className="input sm num" inputMode="decimal" value={d.vat ?? ''} onChange={(e) => set((y) => { y.vat = numOrNull(e.target.value); })} /></label>
               <label className="field"><span>מספר וואטסאפ לבקשות פירוט מעובדים</span>
                 <input className="input" inputMode="tel" dir="ltr" value={d.adminPhone || ''} onChange={(e) => set((y) => { y.adminPhone = e.target.value; })} /></label>
               <label className="field"><span>ירוק – מחיר עדכני עד (ימים)</span>
