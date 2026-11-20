@@ -4,9 +4,9 @@ import { freshness, categoryFor } from '../lib/pricing.js';
 import { getRepairQuote, getDeviceQuotes } from '../lib/publish.js';
 import { fmt, Price, Fresh, waLink, copyText, daysLabel, Icon } from './util.jsx';
 
-export default function ModelSheet({ model, catalog, cfg, customer, isAdmin, initialRepair, onClose, onSaveConfig, toast, onEditItem, onRequest }) {
-  const hasRepairs = model.devKind === 'phone' || model.hasParts;
-  const [tab, setTab] = useState(initialRepair || hasRepairs ? 'repairs' : 'devices');
+// mode = 'repairs' | 'devices' – כל מחירון מוצג בנפרד לגמרי
+export default function ModelSheet({ model, mode, storage, catalog, cfg, customer, isAdmin, initialRepair, onClose, onSaveConfig, toast, onEditItem, onRequest }) {
+  const tab = mode === 'devices' ? 'devices' : 'repairs';
   const sup = useMemo(() => Object.fromEntries((cfg.suppliers || []).map((s) => [s.id, s])), [cfg.suppliers]);
 
   const order = initialRepair ? [initialRepair, ...REPAIRS.map((r) => r.id).filter((r) => r !== initialRepair)] : REPAIRS.map((r) => r.id);
@@ -23,13 +23,7 @@ export default function ModelSheet({ model, catalog, cfg, customer, isAdmin, ini
             <button className="back" onClick={onClose}>‹ חזרה</button>
           </div>
           <h2 style={{ margin: '4px 4px 2px', fontSize: 30, letterSpacing: '-0.02em' }}>{model.model}</h2>
-          <div className="muted" style={{ margin: '0 4px 8px' }}>{model.brand || ''}</div>
-          {hasRepairs && model.hasDevices && (
-            <div className="seg">
-              <button className={tab === 'repairs' ? 'on' : ''} onClick={() => setTab('repairs')}>תיקונים</button>
-              <button className={tab === 'devices' ? 'on' : ''} onClick={() => setTab('devices')}>מכשיר למכירה</button>
-            </div>
-          )}
+          <div className="muted" style={{ margin: '0 4px 8px' }}>{[model.brand, tab === 'devices' ? 'מכשיר למכירה' : 'תיקונים'].filter(Boolean).join(' · ')}</div>
           {tab === 'repairs' && (
             <>
               {shown.map((q, i) => (
@@ -42,7 +36,7 @@ export default function ModelSheet({ model, catalog, cfg, customer, isAdmin, ini
               )}
             </>
           )}
-          {tab === 'devices' && <Devices model={model} catalog={catalog} cfg={cfg} sup={sup} customer={customer} isAdmin={isAdmin} onSaveConfig={onSaveConfig} toast={toast} onEditItem={onEditItem} onRequest={onRequest} />}
+          {tab === 'devices' && <Devices model={model} storage={storage} catalog={catalog} cfg={cfg} sup={sup} customer={customer} isAdmin={isAdmin} onSaveConfig={onSaveConfig} toast={toast} onEditItem={onEditItem} onRequest={onRequest} />}
         </div>
       </div>
     </>
@@ -163,9 +157,10 @@ function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalog, default
   );
 }
 
-function Devices({ model, catalog, cfg, sup, customer, isAdmin, onSaveConfig, toast, onEditItem, onRequest }) {
+function Devices({ model, storage, catalog, cfg, sup, customer, isAdmin, onSaveConfig, toast, onEditItem, onRequest }) {
   const [showInternal, setShowInternal] = useState(false);
-  const list = getDeviceQuotes(model, catalog, cfg);
+  const all = getDeviceQuotes(model, catalog, cfg);
+  const list = storage && all.some((d) => d.item.storage === storage) ? all.filter((d) => d.item.storage === storage) : all;
   if (!list.length) return <div className="card empty">אין מכשיר כזה במחירוני הספקים.</div>;
   const noMargin = list.some((d) => d.margin == null && !d.overridden);
   const textFor = (d) => `${d.item.name}${d.item.variant ? ' (' + d.item.variant + ')' : ''}: ${fmt(d.final)}`;
