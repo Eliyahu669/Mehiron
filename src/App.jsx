@@ -19,6 +19,7 @@ export default function App({ store }) {
   const [customer, setCustomer] = useState(() => lsGet('mehiron:customer', false));
   const [open, setOpen] = useState(null); // דגם פתוח
   const [panel, setPanel] = useState(null); // 'import' | 'settings'
+  const [focusItem, setFocusItem] = useState(null);
   const [shareText, setShareText] = useState('');
   const [msg, setMsg] = useState(null);
   const inputRef = useRef(null);
@@ -109,10 +110,11 @@ export default function App({ store }) {
       )}
 
       {open && <ModelSheet model={open} catalog={catalog} cfg={cfg} customer={customer} isAdmin={isAdmin} initialRepair={repairPill !== 'devices' ? repairFor : null}
-        onClose={() => setOpen(null)} onSaveConfig={store.saveConfig} toast={toast} />}
+        onClose={() => setOpen(null)} onSaveConfig={store.saveConfig} toast={toast}
+        onEditItem={isAdmin ? (f) => { setFocusItem(f); setPanel('settings'); } : null} />}
       {panel === 'import' && <ImportSheet cfg={cfg} lists={data.lists} initialText={shareText} onClose={() => { setPanel(null); setShareText(''); }}
         onSaveList={store.savePriceList} onSaveConfig={store.saveConfig} toast={toast} />}
-      {panel === 'settings' && <SettingsSheet cfg={cfg} catalog={catalog} store={store} onClose={() => setPanel(null)} onSaveConfig={store.saveConfig} toast={toast} />}
+      {panel === 'settings' && <SettingsSheet cfg={cfg} catalog={catalog} lists={data.lists} store={store} focus={focusItem} onClose={() => { setPanel(null); setFocusItem(null); }} onSaveConfig={store.saveConfig} toast={toast} />}
       {msg && <div className="toast">{msg}</div>}
       {store.mode === 'cloud' && !customer && (
         <div className="muted" style={{ textAlign: 'center', marginTop: 28 }}>

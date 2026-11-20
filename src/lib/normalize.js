@@ -114,6 +114,7 @@ export function identify(text, ctxBrand = null) {
     res.kind = 'tablet'; res.brand = has('sam') || has('galaxy') || has('samsung') ? 'Samsung' : null;
   } else if (has('mibox') || (has('tv') && has('box')) || has('homepod') || (has('home') && has('pod')) || has('modem') || has('camera')) {
     res.kind = 'other';
+    res.excluded = has('mibox') || (has('tv') && has('box')) || has('homepod') || (has('home') && has('pod')); // לא נכנסים למחירון
   } else if (has('iphone') || has('ip') || has('lp')) {
     parseIphone(tk, used, res);
   } else if (has('redmi') || has('poco') || has('xiaomi') || has('mi')) {
