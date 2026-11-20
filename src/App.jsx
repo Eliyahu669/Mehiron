@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { buildCatalog, searchModels } from './lib/catalog.js';
+import { buildCatalog, activeLists, searchModels } from './lib/catalog.js';
 import { freshness } from './lib/pricing.js';
 import { liteCatalog, getRepairQuote, getDeviceQuotes } from './lib/publish.js';
 import { REPAIRS } from './lib/defaults.js';
@@ -73,7 +73,7 @@ export default function App({ store }) {
 
   const full = !!data.full;
   const cfg = full ? data.config : data.pcfg;
-  const catalog = useMemo(() => (full ? buildCatalog(data.lists) : liteCatalog(data.pub)), [full, data.lists, data.pub]);
+  const catalog = useMemo(() => (full ? buildCatalog(activeLists(data.lists, data.config)) : liteCatalog(data.pub)), [full, data.lists, data.config, data.pub]);
   const isAdmin = auth.role === 'admin';
   const seeCost = full; // מנהל, או עובד שקיבל הרשאת פירוט
   const showCustomer = customer || !seeCost;

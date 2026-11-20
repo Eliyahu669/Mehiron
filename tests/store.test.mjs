@@ -27,11 +27,11 @@ test('המשתמש הראשון הופך למנהל ורואה הכול; השנ�
 
   // מנהל שומר מחירון – נשמר דחוס ונקרא בחזרה
   const items = mergeItems([], parseMessage('Galaxy A54 מקורי ₪200\nGalaxy A54 תחליפי ₪120', { kind: 'parts', partType: 'screen' }));
-  await a.store.savePriceList('p1', items, { supplierName: 'ספק' });
+  await a.store.savePriceList('parts1', items, { supplierName: 'ספק' });
   await tick(20);
-  assert.equal(typeof fb.docs.get('pricelists/p1').z, 'string');
-  assert.equal(fb.docs.get('pricelists/p1').items, undefined, 'בלי רשימה גלויה במסמך');
-  assert.equal(a.st.data.lists.p1.items.length, 2);
+  assert.equal(typeof fb.docs.get('pricelists/parts1').z, 'string');
+  assert.equal(fb.docs.get('pricelists/parts1').items, undefined, 'בלי רשימה גלויה במסמך');
+  assert.equal(a.st.data.lists.parts1.items.length, 2);
 
   // פרסום לעובדים: דחוס, בלי מחירי ספק
   assert.equal(await a.store.publish(a.st.data.lists, a.st.data.config), true);
@@ -54,7 +54,7 @@ test('עובד: רואה רק קטלוג סופי; המתג "פירוט פנימ
   fb.login({ uid: 'u1', email: 'owner@gmail.com' });
   await tick(20);
   const items = mergeItems([], parseMessage('Galaxy A54 מקורי ₪200', { kind: 'parts', partType: 'screen' }));
-  await admin.store.savePriceList('p1', items, {});
+  await admin.store.savePriceList('parts1', items, {});
   await tick(10);
   await admin.store.publish(admin.st.data.lists, admin.st.data.config);
   await admin.store.addAllowed('Branch@Gmail.com', 'סניף');
@@ -81,7 +81,7 @@ test('עובד: רואה רק קטלוג סופי; המתג "פירוט פנימ
   assert.equal(open.length, 0);
   assert.equal(emp.st.auth.showCost, true);
   assert.equal(emp.st.data.full, true, 'אחרי אישור – מצב מלא');
-  assert.equal(emp.st.data.lists.p1.items.length, 1);
+  assert.equal(emp.st.data.lists.parts1.items.length, 1);
 
   await admin.store.setShowCost('branch@gmail.com', false);
   await tick(20);
@@ -101,4 +101,29 @@ test('מסמכים בפורמט הישן (לפני דחיסה) עדיין נקר
   fb.login({ uid: 'u1', email: 'owner@gmail.com' });
   await tick(20);
   assert.equal(s.st.data.lists.old.items.length, 1);
+});
+
+test('ייבוא מאקסל נשמר באצווה אחת (מחירונים + הגדרות), גם במצב מקומי', async () => {
+  const fb = fakeFirebase();
+  const a = await session(fb);
+  fb.login({ uid: 'u1', email: 'owner@gmail.com' });
+  await tick(20);
+  const items = mergeItems([], parseMessage('Galaxy A54 מקורי ₪200', { kind: 'parts', partType: 'screen' }));
+  const cfg = { ...a.st.data.config, priceOverrides: { 'samsung|galaxy a54|screen|מקורי': 349 }, suppliers: [...a.st.data.config.suppliers, { id: 'sNew', name: 'חדש', type: 'parts', phone: '' }] };
+  await a.store.saveImport({ lists: { parts1: { items, supplierName: 'ספק', updatedAt: 5 }, sNew: { items, supplierName: 'חדש', updatedAt: 6 } }, config: cfg });
+  await tick(20);
+  assert.deepEqual(fb.writes.find((w) => w.batch).batch.sort(), ['app/config', 'pricelists/parts1', 'pricelists/sNew']);
+  assert.equal(typeof fb.docs.get('pricelists/sNew').z, 'string');
+  assert.equal(a.st.data.lists.parts1.updatedAt, 5);
+  assert.equal(a.st.data.lists.sNew.items.length, 1);
+  assert.equal(a.st.data.config.priceOverrides['samsung|galaxy a54|screen|מקורי'], 349);
+  assert.ok(a.st.data.config.suppliers.some((s) => s.id === 'sNew'));
+
+  const local = await createStore({ seed: { lists: {} } });
+  let data = null;
+  local.onData((d) => { data = d; });
+  await local.saveImport({ lists: { parts1: { items, supplierName: 'ספק', updatedAt: 7 } }, config: cfg });
+  assert.equal(data.lists.parts1.items.length, 1);
+  assert.equal(data.lists.parts1.updatedAt, 7);
+  assert.equal(data.config.priceOverrides['samsung|galaxy a54|screen|מקורי'], 349);
 });

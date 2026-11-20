@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { identify, tokenize } from '../src/lib/normalize.js';
 import { extractPrice, parseMessage, mergeItems, manualItem, detectPartType } from '../src/lib/parser.js';
 import { laborFor, repairQuote, deviceQuotes, roundPrice, qualityKey, categoryFor, freshness } from '../src/lib/pricing.js';
-import { buildCatalog, searchModels, detectRepair } from '../src/lib/catalog.js';
+import { buildCatalog, activeLists, searchModels, detectRepair } from '../src/lib/catalog.js';
 import { buildPublicCatalog, publicConfig, liteCatalog, getRepairQuote, getDeviceQuotes } from '../src/lib/publish.js';
 import { pack, unpack, readPriceListDoc, readCatalogDoc, MAX_FIELD } from '../src/lib/packing.js';
 import { bulkPrice, applyBulkPrice, uniqueKey } from '../src/lib/items.js';
@@ -242,8 +242,8 @@ test('חיפוש: מילות תיקון עם תחיליות, נפח לא מפר�
 test('קטלוג לעובדים: בלי מחירי ספק, ומחירים זהים למחירים של המנהל', () => {
   const cfg = mergeConfig(null);
   const lists = {
-    p: { updatedAt: 5, items: mergeItems([], parts('Galaxy A54 מקורי ₪200\nGalaxy A54 תחליפי ₪120')) },
-    d: { updatedAt: 6, items: mergeItems([], devices('iPhone 15 Pro 256 ₪4000')) },
+    parts1: { updatedAt: 5, items: mergeItems([], parts('Galaxy A54 מקורי ₪200\nGalaxy A54 תחליפי ₪120')) },
+    rp: { updatedAt: 6, items: mergeItems([], devices('iPhone 15 Pro 256 ₪4000')) },
   };
   const pub = buildPublicCatalog(lists, cfg);
   const json = JSON.stringify(pub) + JSON.stringify(publicConfig(cfg));
@@ -305,4 +305,27 @@ test('tokenize: מילים מחוברות', () => {
   assert.deepEqual(tokenize('s24ultra'), ['s24', 'ultra']);
   assert.deepEqual(tokenize('ip15'), ['ip', '15']);
   assert.deepEqual(tokenize('zfold6'), ['z', 'fold', '6']);
+});
+
+test('ספק שנמחק מההגדרות לא נספר במחירים; קטגוריה ידנית נשמרת במחירון חדש מהספק; בחירה מפורשת בעריכה גוברת', () => {
+  const cfg = mergeConfig(null); // ספקים: rp, asi, parts1
+  const lists = {
+    parts1: { updatedAt: 1, items: mergeItems([], parts('Galaxy A54 מקורי ₪200')) },
+    gone: { updatedAt: 2, items: mergeItems([], parts('Galaxy A54 מקורי ₪50')) }, // ספק שנמחק
+  };
+  assert.deepEqual(Object.keys(activeLists(lists, cfg)), ['parts1']);
+  const pub = buildPublicCatalog(lists, cfg);
+  assert.equal(pub.models.find((x) => x.k === 'samsung|galaxy a54').r.screen.o[0].f, 320); // 200 + 120, לא 50 + 120
+  assert.equal(pub.updatedAt, 1);
+
+  const dev = mergeItems([], devices('iPhone 15 Pro 256 ₪4000')).map((x) => ({ ...x, categoryOverride: 'mid' }));
+  const again = mergeItems(dev, devices('iPhone 15 Pro 256 ₪3900'), { replace: true });
+  assert.equal(again[0].price, 3900);
+  assert.equal(again[0].categoryOverride, 'mid');
+
+  assert.equal(manualItem({ name: 'Galaxy A54', partType: 'battery', variant: 'מסך מקורי', price: 100 }, 'parts').partType, 'battery');
+  const d = manualItem({ name: 'iPhone 15 Pro 128', storage: 256, variant: '', price: 4000 }, 'devices');
+  assert.equal(d.storage, 256);
+  assert.equal(d.name, 'iPhone 15 Pro 256GB');
+  assert.equal(d.key, 'apple|iphone 15 pro|256|');
 });

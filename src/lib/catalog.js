@@ -2,6 +2,14 @@
 import { identify, modelKey, searchTokens, normText, tokenize } from './normalize.js';
 import { REPAIRS } from './defaults.js';
 
+/** רק מחירונים של ספקים שמוגדרים בהגדרות – ספק שנמחק לא נספר במחירים */
+export function activeLists(lists, cfg) {
+  const ids = new Set((cfg?.suppliers || []).map((s) => s.id));
+  const out = {};
+  for (const [id, doc] of Object.entries(lists || {})) if (ids.has(id)) out[id] = doc;
+  return out;
+}
+
 export function buildCatalog(lists) {
   const devices = [], parts = [];
   const models = new Map();

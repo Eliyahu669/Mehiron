@@ -142,7 +142,8 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
           )}
 
           {tab === 'users' && <Users store={store} toast={toast} requests={requests} onClose={onClose} />}
-          {tab === 'items' && <ItemsManager cfg={cfg} lists={lists} store={store} toast={toast} focus={focus} />}
+          {tab === 'items' && <ItemsManager cfg={d} lists={lists} store={store} toast={toast} focus={focus}
+            onConfigSaved={(c) => { dirty.current = false; setD(JSON.parse(JSON.stringify(c))); setStatus('saved'); }} />}
         </div>
       </div>
     </>

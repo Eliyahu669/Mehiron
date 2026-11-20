@@ -71,8 +71,9 @@ function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalog, default
   }
 
   const toggleAddon = (id) => setAddonIds((a) => (a.includes(id) ? a.filter((x) => x !== id) : [...a, id]));
-  const setOverride = async (key, val) => {
+  const setOverride = async (key, val, legacy) => {
     const po = { ...(cfg.priceOverrides || {}) };
+    if (legacy && legacy !== key) delete po[legacy];
     if (val === '' || val == null) delete po[key]; else po[key] = Number(val);
     await onSaveConfig({ ...cfg, priceOverrides: po });
     toast(val === '' ? 'המחיר הידני הוסר' : 'נשמר מחיר ידני');
@@ -129,7 +130,7 @@ function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalog, default
                 <div className="sup-row" style={{ marginTop: 4, alignItems: 'center' }}>
                   <span>מחיר ידני ללקוח</span>
                   <input className="input sm num" inputMode="numeric" defaultValue={o.overridden ? o.final : ''} placeholder="אוטומטי"
-                    onBlur={(e) => e.target.value !== String(o.overridden ? o.final : '') && setOverride(o.overrideKey, e.target.value)} />
+                    onBlur={(e) => e.target.value !== String(o.overridden ? o.final : '') && setOverride(o.overrideKey, e.target.value, o.legacyKey)} />
                 </div>
               )}
             </div>
@@ -164,8 +165,9 @@ function Devices({ model, storage, catalog, cfg, sup, customer, isAdmin, onSaveC
   if (!list.length) return <div className="card empty">אין מכשיר כזה במחירוני הספקים.</div>;
   const noMargin = list.some((d) => d.margin == null && !d.overridden);
   const textFor = (d) => `${d.item.name}${d.item.variant ? ' (' + d.item.variant + ')' : ''}: ${fmt(d.final)}`;
-  const setOverride = async (key, val) => {
+  const setOverride = async (key, val, legacy) => {
     const po = { ...(cfg.priceOverrides || {}) };
+    if (legacy && legacy !== key) delete po[legacy];
     if (val === '' || val == null) delete po[key]; else po[key] = Number(val);
     await onSaveConfig({ ...cfg, priceOverrides: po });
     toast(val === '' ? 'המחיר הידני הוסר' : 'נשמר מחיר ידני');
@@ -189,7 +191,7 @@ function Devices({ model, storage, catalog, cfg, sup, customer, isAdmin, onSaveC
                 <a className="btn" style={{ height: 32 }} href={waLink('', textFor(d))} target="_blank" rel="noreferrer">{Icon.wa}<span>שלח</span></a>
                 {onEditItem && <button className="btn" style={{ height: 32 }} onClick={() => onEditItem({ supplierId: d.item.supplierId, key: d.item.key })}>ערוך פריט</button>}
                 {isAdmin && <input className="input sm num" inputMode="numeric" defaultValue={d.overridden ? d.final : ''} placeholder="ידני"
-                  onBlur={(e) => e.target.value !== String(d.overridden ? d.final : '') && setOverride(d.overrideKey, e.target.value)} />}
+                  onBlur={(e) => e.target.value !== String(d.overridden ? d.final : '') && setOverride(d.overrideKey, e.target.value, d.legacyKey)} />}
               </div>
             )}
           </div>

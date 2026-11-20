@@ -168,3 +168,23 @@ textarea.input { min-height: 180px; resize: vertical; line-height: 1.5; }
 
 /* אייפון מגדיל את המסך כשמקלידים בשדה קטן מ-16px */
 .input.sm { font-size: 16px; }
+
+/* ייצוא / ייבוא אקסל */
+.xl-bar { display: flex; gap: 8px; margin-top: 8px; }
+.xl-bar .btn { flex: 1; justify-content: center; }
+.xl-card { padding: 14px; margin-top: 8px; }
+.xl-sum { margin: 10px 0 4px; }
+.xl-sec { border-top: 1px solid var(--line); padding: 8px 0; }
+.xl-sec summary { cursor: pointer; font-size: 15px; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 8px; }
+.xl-sec summary::-webkit-details-marker { display: none; }
+.xl-sec summary::after { content: '‹'; margin-inline-start: auto; color: var(--text3); transition: transform .2s; }
+.xl-sec[open] summary::after { transform: rotate(-90deg); }
+.xl-sec.red summary { color: var(--red); }
+.xl-sec.orange summary { color: var(--orange); }
+.xl-list { margin-top: 6px; max-height: 320px; overflow-y: auto; }
+.xl-row { display: flex; gap: 8px; align-items: baseline; padding: 5px 0; font-size: 14px; border-bottom: 1px solid var(--line); }
+.xl-row:last-child { border-bottom: 0; }
+.xl-row .main { flex: 1; min-width: 0; }
+.xl-row .sub { color: var(--text2); font-size: 12px; }
+.xl-note { color: var(--text2); font-size: 13px; margin: 6px 0; }
+.xl-note.warn { color: var(--orange); }

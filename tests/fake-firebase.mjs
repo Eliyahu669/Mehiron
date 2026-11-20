@@ -42,6 +42,17 @@ export function fakeFirebase() {
     },
     async addDoc(ref, data) { const id = 'id' + Math.random().toString(36).slice(2); return fs.setDoc({ path: `${ref.path}/${id}` }, data); },
     async deleteDoc(ref) { docs.delete(ref.path); queueMicrotask(emitAll); },
+    writeBatch() {
+      const ops = [];
+      return {
+        set(ref, data) { ops.push([ref, structuredClone(data)]); return this; },
+        async commit() {
+          writes.push({ batch: ops.map(([r]) => r.path) });
+          for (const [ref, data] of ops) docs.set(ref.path, data);
+          queueMicrotask(emitAll);
+        },
+      };
+    },
   };
   const au = {
     getAuth: () => ({}), setPersistence: async () => {}, browserLocalPersistence: {}, getRedirectResult: async () => null,

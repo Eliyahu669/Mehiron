@@ -1,5 +1,5 @@
 // פירוק הודעת מחירון של ספק (טקסט חופשי מוואטסאפ, או טבלה מ-PDF / גוגל שיטס) לשורות מובנות
-import { identify, modelKey, displayName, tokenize } from './normalize.js';
+import { identify, modelKey, displayName, tokenize, fmtStorage } from './normalize.js';
 
 const STORAGE = new Set([16, 32, 64, 128, 256, 512, 1024]);
 const MODEL_WORDS = new Set(['iphone', 'ip', 'lp', 'galaxy', 'redmi', 'poco', 'airpods', 'airpod', 'ipad', 'watch', 'mibox',
@@ -242,6 +242,7 @@ export function mergeItems(oldItems, newItems, { replace = true, now = Date.now(
     if (!n.ok) continue;
     const o = byKey.get(n.key);
     const rec = { ...n, updatedAt: now, prevPrice: o && o.price !== n.price ? o.price : (o ? o.prevPrice ?? null : null), changedAt: o && o.price !== n.price ? now : (o ? o.changedAt ?? now : now) };
+    if (o?.categoryOverride && !rec.categoryOverride) rec.categoryOverride = o.categoryOverride; // קטגוריית רווח שנקבעה ידנית נשמרת גם כשהספק שולח מחירון חדש
     if (!replace && idx.has(n.key)) out[idx.get(n.key)] = rec; else { idx.set(n.key, out.length); out.push(rec); }
   }
   return out;
@@ -253,6 +254,11 @@ export function manualItem(f, kind, prev = null, now = Date.now()) {
   const name = String(f.name || '').trim();
   const storageTxt = opts.kind === 'devices' && f.storage ? ` ${f.storage}` : '';
   const it = makeItem(name + storageTxt, f.variant || '', Number(f.price), null, prev?.raw || 'ידני', opts);
+  if (opts.kind === 'parts' && f.partType) it.partType = f.partType; // סוג חלק שנבחר במפורש גובר על זיהוי מהטקסט
+  if (opts.kind === 'devices' && f.storage && it.family) { // נפח שהוזן במפורש גובר על נפח שזוהה מהשם
+    it.storage = Number(f.storage);
+    it.name = [it.model, fmtStorage(it.storage)].filter(Boolean).join(' ');
+  }
   if (!it.family) { // לא זוהה דגם מובנה – שם חופשי
     it.model = name;
     it.mkey = `${(it.brand || '').toLowerCase()}|${name.toLowerCase()}`;

@@ -30,6 +30,10 @@ export function qualityKey(q) {
   return String(q || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean).sort().join(' ') || 'סטנדרטי';
 }
 
+// מפתחות "מחיר ידני ללקוח": תיקון = דגם + סוג תיקון + איכות; מכשיר = דגם + נפח + וריאנט (לכל הספקים יחד)
+export const repairGroupKey = (mkey, repair, variant) => `${mkey}|${repair}|${qualityKey(variant)}`;
+export const deviceGroupKey = (it) => `${it.mkey}|${it.storage || ''}|${it.variant || ''}`;
+
 /** עלות עבודה לדגם ולסוג תיקון. מחזיר { amount, source } או null אם לא מוגדר */
 export function laborFor(model, repair, cfg) {
   const rules = (cfg.laborRules || []).filter((r) => ruleMatches(r, model.model));
@@ -75,13 +79,13 @@ export function repairQuote(model, repair, parts, cfg, addonIds = []) {
     list.sort((a, b) => a.price - b.price);
     const best = list[0];
     const quality = best.variant || 'סטנדרטי';
-    const overrideKey = `${model.mkey}|${repair}|${qk}`;
+    const overrideKey = repairGroupKey(model.mkey, repair, best.variant);
     const legacyKey = `${model.mkey}|${repair}|${quality}`; // מפתח ישן (לפני איחוד שמות איכות)
     const ov = cfg.priceOverrides?.[overrideKey] ?? cfg.priceOverrides?.[legacyKey];
     const override = ov == null || ov === '' ? null : ov;
     const computed = labor ? roundPrice(best.price + labor.amount + addonSum, cfg) : null;
     return {
-      quality, part: best, suppliers: list, overrideKey,
+      quality, part: best, suppliers: list, overrideKey, legacyKey,
       final: override != null ? Number(override) : computed,
       computed, overridden: override != null,
       profit: override != null ? Number(override) - best.price : (computed != null ? computed - best.price : null),
@@ -116,11 +120,12 @@ export function deviceQuotes(model, devices, cfg) {
     list.sort((a, b) => a.price - b.price);
     const best = list[0];
     const margin = marginFor(best, cfg);
-    const ov = cfg.priceOverrides?.[best.key];
+    const overrideKey = deviceGroupKey(best);
+    const ov = cfg.priceOverrides?.[overrideKey] ?? cfg.priceOverrides?.[best.key];
     const override = ov == null || ov === '' ? null : ov;
     const computed = margin != null ? roundPrice(best.price * (1 + margin / 100), cfg) : null;
     return {
-      item: best, suppliers: list, margin, overrideKey: best.key,
+      item: best, suppliers: list, margin, overrideKey, legacyKey: best.key,
       final: override != null ? Number(override) : computed,
       computed, overridden: override != null,
       profit: (override != null ? Number(override) : computed) != null ? (override != null ? Number(override) : computed) - best.price : null,

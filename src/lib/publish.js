@@ -1,5 +1,5 @@
 // קטלוג "מחירים סופיים בלבד" לעובדים: בלי מחירי ספק, בלי שמות ספקים ובלי אחוזי רווח
-import { buildCatalog } from './catalog.js';
+import { buildCatalog, activeLists } from './catalog.js';
 import { repairQuote, deviceQuotes, laborFor, roundPrice } from './pricing.js';
 import { REPAIRS } from './defaults.js';
 import { searchTokens } from './normalize.js';
@@ -16,7 +16,8 @@ export function publicConfig(cfg) {
   };
 }
 
-export function buildPublicCatalog(lists, cfg) {
+export function buildPublicCatalog(allLists, cfg) {
+  const lists = activeLists(allLists, cfg);
   const cat = buildCatalog(lists);
   const models = cat.models.map((m) => {
     const r = {};
