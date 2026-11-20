@@ -146,3 +146,6 @@ textarea.input { min-height: 180px; resize: vertical; line-height: 1.5; }
 .switch span { position: absolute; top: 2px; right: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0,0,0,.2); transition: transform .2s; }
 .switch.on { background: var(--green); }
 .switch.on span { transform: translateX(-20px); }
+
+.mode-seg { margin: 10px 0 0; }
+.mode-seg button { height: 34px; font-size: 15px; }

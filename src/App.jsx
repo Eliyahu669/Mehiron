@@ -7,44 +7,69 @@ import { fmt, Fresh, Icon, daysLabel } from './ui/util.jsx';
 import ModelSheet from './ui/ModelSheet.jsx';
 import ImportSheet from './ui/ImportSheet.jsx';
 import SettingsSheet from './ui/SettingsSheet.jsx';
-import { useBack } from './ui/useBack.js';
+import { useBack, useExitGuard } from './ui/useBack.js';
 
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* */ } };
+
+const DEVICE_CATS = [
+  { id: 'phone', label: 'טלפונים', kinds: ['phone'] },
+  { id: 'tablet', label: 'טאבלטים', kinds: ['tablet'] },
+  { id: 'wear', label: 'שעונים ואוזניות', kinds: ['watch', 'audio'] },
+  { id: 'acc', label: 'אביזרים', kinds: ['accessory', 'other'] },
+];
+const BRANDS = ['Apple', 'Samsung', 'Xiaomi'];
+const EMPTY = { query: '', brand: null, pill: null };
+const BIG_STORAGE = /(^|\s)(64|128|256|512|1024)\s*(gb|g|גיגה)?(?=\s|$)|(^|\s)([12])\s*(tb|טרה)(?=\s|$)/i;
 
 export default function App({ store }) {
   const [auth, setAuth] = useState({ user: null, role: 'pending' });
   const [data, setData] = useState({ ready: false });
   const [requests, setRequests] = useState([]);
-  const [query, setQuery] = useState('');
-  const [brand, setBrand] = useState(null);
-  const [repairPill, setRepairPill] = useState(null);
+  const [mode, setMode] = useState(() => lsGet('mehiron:mode', 'repairs')); // 'repairs' | 'devices'
+  const [filters, setFilters] = useState({ repairs: EMPTY, devices: EMPTY }); // חיפוש נפרד לכל מחירון
   const [customer, setCustomer] = useState(() => lsGet('mehiron:customer', false));
   const [open, setOpen] = useState(null); // דגם פתוח
-  const [panel, setPanel] = useState(null); // 'import' | 'settings'
+  const [panel, setPanel] = useState(null); // 'import' | 'settings' | 'users'
   const [focusItem, setFocusItem] = useState(null);
   const [shareText, setShareText] = useState('');
   const [msg, setMsg] = useState(null);
   const inputRef = useRef(null);
 
+  const f = filters[mode];
+  const setF = (patch) => setFilters((all) => ({ ...all, [mode]: { ...all[mode], ...patch } }));
+  const { query, brand, pill } = f;
+
   useEffect(() => store.onAuth(setAuth), [store]);
   useEffect(() => store.onData(setData), [store]);
   useEffect(() => lsSet('mehiron:customer', customer), [customer]);
+  useEffect(() => lsSet('mehiron:mode', mode), [mode]);
   useEffect(() => {
     // שיתוף טקסט מוואטסאפ ישירות לאפליקציה (Android)
     const p = new URLSearchParams(location.search);
     const t = p.get('text') || p.get('title');
-    if (t) { setShareText(t); history.replaceState(null, '', location.pathname); }
+    if (t) { setShareText(t); history.replaceState(history.state, '', location.pathname); }
   }, []);
   useEffect(() => { if (shareText && auth.role === 'admin') setPanel('import'); }, [shareText, auth.role]);
 
+  const toastTimer = useRef(null);
+  const toast = (t) => { setMsg(t); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setMsg(null), 2600); };
   const closeImport = () => { setPanel(null); setShareText(''); };
   const closeSettings = () => { setPanel(null); setFocusItem(null); };
+
+  // אחורה: חלונות → סינונים (מהאחרון שנבחר) → חיפוש → מחירון תיקונים → יציאה בלחיצה כפולה
+  useExitGuard(() => toast('לחץ שוב אחורה כדי לצאת'));
+  useBack(mode === 'devices', () => setMode('repairs'));
+  useBack(mode === 'repairs' && !!filters.repairs.query, () => setFilters((a) => ({ ...a, repairs: { ...a.repairs, query: '' } })));
+  useBack(mode === 'devices' && !!filters.devices.query, () => setFilters((a) => ({ ...a, devices: { ...a.devices, query: '' } })));
+  useBack(mode === 'repairs' && !!filters.repairs.brand, () => setFilters((a) => ({ ...a, repairs: { ...a.repairs, brand: null } })));
+  useBack(mode === 'devices' && !!filters.devices.brand, () => setFilters((a) => ({ ...a, devices: { ...a.devices, brand: null } })));
+  useBack(mode === 'repairs' && !!filters.repairs.pill, () => setFilters((a) => ({ ...a, repairs: { ...a.repairs, pill: null } })));
+  useBack(mode === 'devices' && !!filters.devices.pill, () => setFilters((a) => ({ ...a, devices: { ...a.devices, pill: null } })));
   useBack(!!open, () => setOpen(null), true);
   useBack(panel === 'import', closeImport, true);
   useBack(panel === 'settings' || panel === 'users', closeSettings, true);
 
-  const toast = (t) => { setMsg(t); clearTimeout(toast.t); toast.t = setTimeout(() => setMsg(null), 2600); };
   const full = !!data.full;
   const cfg = full ? data.config : data.pcfg;
   const catalog = useMemo(() => (full ? buildCatalog(data.lists) : liteCatalog(data.pub)), [full, data.lists, data.pub]);
@@ -62,20 +87,45 @@ export default function App({ store }) {
   useEffect(() => (isAdmin && store.onRequests ? store.onRequests(setRequests) : undefined), [isAdmin, store]);
   const onRequest = !seeCost ? (what) => { store.createRequest({ what }).catch(() => {}); toast('הבקשה נשלחה למנהל'); } : null;
 
-  const q = [query, repairPill ? REPAIRS.find((r) => r.id === repairPill).label : ''].filter(Boolean).join(' ');
+  // במכשירים: נפח בחיפוש ("17 פרו 256") מסנן גרסאות ולא חלק משם הדגם
+  const storageQ = useMemo(() => {
+    if (mode !== 'devices') return null;
+    const m = query.match(BIG_STORAGE);
+    if (!m) return null;
+    return m[5] ? Number(m[5]) * 1024 : Number(m[2]);
+  }, [mode, query]);
+
   const results = useMemo(() => {
     if (!cfg) return { repair: null, models: [] };
-    const kind = repairPill === 'devices' ? 'devices' : null;
-    const qq = repairPill === 'devices' ? query : q;
-    if (!qq.trim() && !brand && !repairPill) return { repair: null, models: [] };
-    return searchModels(qq, catalog, { brand, kindFilter: kind });
-  }, [q, query, brand, repairPill, catalog, cfg]);
+    const active = query.trim() || brand || pill;
+    if (!active) return { repair: null, models: [] };
+    if (mode === 'repairs') {
+      const q = [query, pill ? REPAIRS.find((r) => r.id === pill)?.label : ''].filter(Boolean).join(' ');
+      const r = searchModels(q, catalog, { brand, kindFilter: 'repairs' });
+      // רק דגמים שיש להם מחיר תיקון (למשל אייפון 8 / SE לא מתוקנים – לא מוצגים)
+      const has = (m) => (r.repair ? [r.repair] : REPAIRS.map((x) => x.id)).some((id) => {
+        const qt = getRepairQuote(m, id, catalog, cfg);
+        return qt.options.some((o) => o.final != null) || qt.laborOnly != null;
+      });
+      return { ...r, models: r.models.filter(has) };
+    }
+    const q = storageQ ? query.replace(BIG_STORAGE, ' ') : query;
+    const r = searchModels(q, catalog, { brand, kindFilter: 'devices' });
+    let models = r.models.filter((m) => m.hasDevices && !m.synthetic);
+    if (pill) models = models.filter((m) => DEVICE_CATS.find((c) => c.id === pill)?.kinds.includes(m.devKind || 'other'));
+    if (storageQ) models = models.filter((m) => getDeviceQuotes(m, catalog, cfg).some((d) => d.item.storage === storageQ));
+    return { repair: null, models };
+  }, [mode, query, brand, pill, storageQ, catalog, cfg]);
 
   if (auth.role === 'pending' || (auth.role !== 'none' && (!data.ready || !cfg))) return <div className="login"><div className="muted">טוען…</div></div>;
   if (auth.role === 'none') return <Login store={store} auth={auth} />;
 
-  const supplierStatus = (full ? cfg.suppliers || [] : []).map((s) => ({ s, doc: data.lists[s.id], f: freshness(data.lists[s.id]?.updatedAt, cfg) }));
+  const supType = mode === 'repairs' ? 'parts' : 'devices';
+  const supplierStatus = (full ? cfg.suppliers || [] : []).filter((s) => (s.type || 'devices') === supType)
+    .map((s) => ({ s, doc: data.lists[s.id], f: freshness(data.lists[s.id]?.updatedAt, cfg) }));
   const repairFor = results.repair;
+  const idle = !query.trim() && !brand && !pill;
+  const switchMode = (m) => { if (m !== mode) { setMode(m); setOpen(null); } };
 
   return (
     <div className="app">
@@ -86,16 +136,20 @@ export default function App({ store }) {
           {isAdmin && !customer && <button className="icon-btn" title="הגדרות" style={{ position: 'relative' }} onClick={() => setPanel('settings')}>{Icon.gear}{requests.length > 0 && <span className="badge num">{requests.length}</span>}</button>}
           {isAdmin && !customer && <button className="pill-btn" onClick={() => setPanel('import')}>{Icon.plus}<span>עדכן מחירון</span></button>}
         </div>
+        <div className="seg mode-seg">
+          <button className={mode === 'repairs' ? 'on' : ''} onClick={() => switchMode('repairs')}>מחירון תיקונים</button>
+          <button className={mode === 'devices' ? 'on' : ''} onClick={() => switchMode('devices')}>מחירון מכשירים</button>
+        </div>
         <div className="search">
           <span className="mag">{Icon.search}</span>
-          <input ref={inputRef} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="לדוגמה: אייפון 14 פרו מסך" enterKeyHint="search" autoComplete="off" autoCorrect="off" spellCheck={false} />
-          {query && <button className="clear" onClick={() => { setQuery(''); inputRef.current?.focus(); }}>✕</button>}
+          <input ref={inputRef} value={query} onChange={(e) => setF({ query: e.target.value })}
+            placeholder={mode === 'repairs' ? 'לדוגמה: אייפון 14 פרו מסך' : 'לדוגמה: אייפון 17 פרו 256'} enterKeyHint="search" autoComplete="off" autoCorrect="off" spellCheck={false} />
+          {query && <button className="clear" onClick={() => { setF({ query: '' }); inputRef.current?.focus(); }}>✕</button>}
         </div>
         <div className="pills">
-          {['Apple', 'Samsung', 'Xiaomi'].map((b) => <button key={b} className={'pill' + (brand === b ? ' on' : '')} onClick={() => setBrand(brand === b ? null : b)}>{b}</button>)}
+          {BRANDS.map((b) => <button key={b} className={'pill' + (brand === b ? ' on' : '')} onClick={() => setF({ brand: brand === b ? null : b })}>{b}</button>)}
           <span className="pill-sep" />
-          {REPAIRS.map((r) => <button key={r.id} className={'pill' + (repairPill === r.id ? ' on' : '')} onClick={() => setRepairPill(repairPill === r.id ? null : r.id)}>{r.label}</button>)}
-          <button className={'pill' + (repairPill === 'devices' ? ' on' : '')} onClick={() => setRepairPill(repairPill === 'devices' ? null : 'devices')}>מכשירים</button>
+          {(mode === 'repairs' ? REPAIRS : DEVICE_CATS).map((r) => <button key={r.id} className={'pill' + (pill === r.id ? ' on' : '')} onClick={() => setF({ pill: pill === r.id ? null : r.id })}>{r.label}</button>)}
         </div>
       </div>
 
@@ -109,47 +163,51 @@ export default function App({ store }) {
           תצוגה מקדימה כעובד ({auth.user.email}{auth.showCost ? ', עם פירוט' : ''}) · חזרה למנהל ‹
         </button>
       )}
-      {!full && catalog.updatedAt > 0 && (
-        <div className="muted" style={{ margin: '12px 6px 0' }}>המחירון עודכן {daysLabel(freshness(catalog.updatedAt, cfg).days).replace('עודכן ', '')}</div>
-      )}
-      {store.mode === 'local' && !customer && (
-        <div className="banner">תצוגה מקדימה: הנתונים נשמרים רק במכשיר הזה. אחרי חיבור Firebase כל הסניפים יתעדכנו מהמאגר הראשי.</div>
+      {store.mode === 'local' && !customer && auth.role === 'admin' && (
+        <div className="banner">תצוגה מקדימה: הנתונים נשמרים רק במכשיר הזה.</div>
       )}
 
-      {full && results.models.length === 0 && !query && !brand && !repairPill && (
+      {idle && (
         <>
-          <div className="section-title">מצב המחירונים</div>
-          <div className="card list">
-            {supplierStatus.map(({ s, doc, f }) => (
-              <div key={s.id} className="row">
-                <span className={'dot ' + f.level} />
-                <div className="main"><div className="t1" style={{ fontSize: 16 }}>{s.name}</div>
-                  <div className="t2">{doc ? `${doc.items?.length || 0} שורות · ${daysLabel(f.days)}` : 'עדיין לא נטען מחירון'}</div></div>
-                <span className="muted">{s.type === 'parts' ? 'חלקים' : 'מכשירים'}</span>
+          {full && supplierStatus.length > 0 && (
+            <>
+              <div className="section-title">{mode === 'repairs' ? 'ספקי חלקים' : 'ספקי מכשירים'}</div>
+              <div className="card list">
+                {supplierStatus.map(({ s, doc, f: fr }) => (
+                  <div key={s.id} className="row">
+                    <span className={'dot ' + fr.level} />
+                    <div className="main"><div className="t1" style={{ fontSize: 16 }}>{s.name}</div>
+                      <div className="t2">{doc ? `${doc.items?.length || 0} שורות · ${daysLabel(fr.days)}` : 'עדיין לא נטען מחירון'}</div></div>
+                  </div>
+                ))}
               </div>
-            ))}
+            </>
+          )}
+          {!full && catalog.updatedAt > 0 && (
+            <div className="muted" style={{ margin: '14px 6px 0' }}>המחירון עודכן {daysLabel(freshness(catalog.updatedAt, cfg).days).replace('עודכן ', '')}</div>
+          )}
+          <div className="empty" style={{ paddingTop: 28 }}>
+            {mode === 'repairs'
+              ? <>מקלידים דגם וסוג תיקון ומקבלים מחיר סופי ללקוח.<br />לדוגמה: <b>a54 מסך</b>, <b>15 פרו סוללה</b>, <b>זד פליפ 5</b></>
+              : <>מקלידים דגם (ואפשר גם נפח) ומקבלים מחיר מכירה ללקוח.<br />לדוגמה: <b>17 פרו 256</b>, <b>s26</b>, <b>איירפודס</b></>}
           </div>
-          <div className="empty" style={{ paddingTop: 28 }}>מקלידים דגם וסוג תיקון ומקבלים מחיר סופי ללקוח.<br />לדוגמה: <b>a54 מסך</b>, <b>15 פרו סוללה</b>, <b>זד פליפ 5</b></div>
         </>
       )}
 
-      {(query || brand || repairPill) && results.models.length === 0 && <div className="empty">לא נמצא דגם מתאים</div>}
+      {!idle && results.models.length === 0 && <div className="empty">לא נמצא {mode === 'repairs' ? 'דגם מתאים' : 'מכשיר מתאים'}</div>}
 
       {results.models.length > 0 && (
         <>
           <div className="section-title">{results.models.length > 60 ? 'תוצאות (60 ראשונות)' : 'תוצאות'}</div>
           <div className="card list">
-            {results.models.slice(0, 60).map((m) => <ResultRow key={m.mkey} m={m} repair={repairFor} catalog={catalog} cfg={cfg} devicesMode={repairPill === 'devices'} onOpen={() => setOpen(m)} />)}
+            {results.models.slice(0, 60).map((m) => <ResultRow key={m.mkey} m={m} mode={mode} repair={repairFor} storage={storageQ} catalog={catalog} cfg={cfg} onOpen={() => setOpen(m)} />)}
           </div>
         </>
       )}
 
-      {!full && results.models.length === 0 && !query && !brand && !repairPill && (
-        <div className="empty" style={{ paddingTop: 28 }}>מקלידים דגם וסוג תיקון ומקבלים מחיר סופי ללקוח.<br />לדוגמה: <b>a54 מסך</b>, <b>15 פרו סוללה</b></div>
-      )}
-      {open && <ModelSheet model={open} catalog={catalog} cfg={cfg} customer={showCustomer} isAdmin={isAdmin} onRequest={onRequest} initialRepair={repairPill !== 'devices' ? repairFor : null}
+      {open && <ModelSheet model={open} mode={mode} storage={storageQ} catalog={catalog} cfg={cfg} customer={showCustomer} isAdmin={isAdmin} onRequest={onRequest} initialRepair={mode === 'repairs' ? repairFor : null}
         onClose={() => setOpen(null)} onSaveConfig={store.saveConfig} toast={toast}
-        onEditItem={isAdmin ? (f) => { setFocusItem(f); setPanel('settings'); } : null} />}
+        onEditItem={isAdmin ? (fi) => { setFocusItem(fi); setPanel('settings'); } : null} />}
       {panel === 'import' && <ImportSheet cfg={cfg} lists={data.lists} initialText={shareText} onClose={closeImport}
         onSaveList={store.savePriceList} onSaveConfig={store.saveConfig} toast={toast} />}
       {(panel === 'settings' || panel === 'users') && <SettingsSheet cfg={cfg} catalog={catalog} lists={data.lists} store={store} focus={focusItem} initialTab={panel === 'users' ? 'users' : null} requests={requests} onClose={closeSettings} onSaveConfig={store.saveConfig} toast={toast} />}
@@ -163,25 +221,29 @@ export default function App({ store }) {
   );
 }
 
-function ResultRow({ m, repair, catalog, cfg, devicesMode, onOpen }) {
+function ResultRow({ m, mode, repair, storage, catalog, cfg, onOpen }) {
   let right = null, sub = '';
-  if (repair && !devicesMode) {
-    const qt = getRepairQuote(m, repair, catalog, cfg);
-    const best = qt.options[0];
-    if (best && best.final != null) {
-      right = <span className="price num">{fmt(best.final)}</span>;
-      sub = `${qt.label} · ${best.quality}${qt.options.length > 1 ? ` · עוד ${qt.options.length - 1} רמות` : ''}`;
-    } else if (qt.laborOnly != null) {
-      right = <span><span className="price num" style={{ fontSize: 17 }}>{fmt(qt.laborOnly)}</span><span className="plus-part">+ חלק</span></span>;
-      sub = `${qt.label} · עבודה בלבד, אין מחיר חלק`;
-    } else sub = `${qt.label} · לא מוגדר`;
+  if (mode === 'repairs') {
+    if (repair) {
+      const qt = getRepairQuote(m, repair, catalog, cfg);
+      const best = qt.options[0];
+      if (best && best.final != null) {
+        right = <span className="price num">{fmt(best.final)}</span>;
+        sub = `${qt.label} · ${best.quality}${qt.options.length > 1 ? ` · עוד ${qt.options.length - 1} רמות` : ''}`;
+      } else if (qt.laborOnly != null) {
+        right = <span><span className="price num" style={{ fontSize: 17 }}>{fmt(qt.laborOnly)}</span><span className="plus-part">+ חלק</span></span>;
+        sub = `${qt.label} · עבודה בלבד, אין מחיר חלק`;
+      } else sub = `${qt.label} · לא מוגדר`;
+    } else {
+      const avail = REPAIRS.filter((r) => { const qt = getRepairQuote(m, r.id, catalog, cfg); return qt.options.length || qt.laborOnly != null; });
+      sub = avail.length ? avail.map((r) => r.label).join(' · ') : 'אין תיקונים מוגדרים';
+    }
   } else {
-    const dq = m.hasDevices ? getDeviceQuotes(m, catalog, cfg).filter((d) => d.final != null) : [];
+    let dq = getDeviceQuotes(m, catalog, cfg).filter((d) => d.final != null);
+    if (storage) dq = dq.filter((d) => d.item.storage === storage);
     const min = dq.length ? Math.min(...dq.map((d) => d.final)) : null;
-    const bits = [];
-    if (m.devKind === 'phone' || m.hasParts) bits.push('תיקונים');
-    if (m.hasDevices) bits.push(min != null ? `מכשיר מ-${fmt(min)}` : 'מכשיר למכירה');
-    sub = bits.join(' · ');
+    if (min != null) right = <span className="price num">{fmt(min)}</span>;
+    sub = dq.length > 1 ? `${dq.length} גרסאות · החל מ-${fmt(min)}` : dq.length === 1 ? [dq[0].item.storage ? dq[0].item.name.replace(m.model, '').trim() : '', dq[0].item.variant].filter(Boolean).join(' · ') : 'אין מחיר ללקוח';
   }
   return (
     <button className="row" onClick={onOpen}>
@@ -198,7 +260,7 @@ function Login({ store, auth }) {
       <h1>מחירון</h1>
       {auth.user ? (
         <>
-          <p className="muted" style={{ lineHeight: 1.6 }}>החשבון <b dir="ltr">{auth.user.email}</b> עדיין לא מורשה.<br />בקש מהמנהל להוסיף אותו בהגדרות ← משתמשים.</p>
+          <p className="muted" style={{ lineHeight: 1.6 }}>החשבון <b dir="ltr">{auth.user.email}</b> עדיין לא מורשה.<br />בקש מהמנהל להוסיף אותו בהגדרות ← עובדים.</p>
           <button className="btn" onClick={() => store.signOut()}>החלף חשבון</button>
         </>
       ) : (
