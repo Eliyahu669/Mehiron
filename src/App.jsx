@@ -26,6 +26,7 @@ export default function App({ store }) {
   const [auth, setAuth] = useState({ user: null, role: 'pending' });
   const [data, setData] = useState({ ready: false });
   const [requests, setRequests] = useState([]);
+  const [pubError, setPubError] = useState(null); // פרסום המחירים לעובדים נכשל
   const [mode, setMode] = useState(() => lsGet('mehiron:mode', 'repairs')); // 'repairs' | 'devices'
   const [filters, setFilters] = useState({ repairs: EMPTY, devices: EMPTY }); // חיפוש נפרד לכל מחירון
   const [customer, setCustomer] = useState(() => lsGet('mehiron:customer', false));
@@ -80,7 +81,7 @@ export default function App({ store }) {
   // מנהל: מפרסם לעובדים קטלוג מחירים סופיים בכל שינוי
   useEffect(() => {
     if (!isAdmin || !full || !data.ready) return;
-    const t = setTimeout(() => { store.publish(data.lists, data.config).catch(() => {}); }, 1200);
+    const t = setTimeout(() => { store.publish(data.lists, data.config).then(() => setPubError(null), (e) => setPubError(e?.message || String(e))); }, 1200);
     return () => clearTimeout(t);
   }, [isAdmin, full, data.ready, data.lists, data.config, store]);
   // מנהל: בקשות פירוט פתוחות
@@ -117,7 +118,8 @@ export default function App({ store }) {
     return { repair: null, models };
   }, [mode, query, brand, pill, storageQ, catalog, cfg]);
 
-  if (auth.role === 'pending' || (auth.role !== 'none' && (!data.ready || !cfg))) return <div className="login"><div className="muted">טוען…</div></div>;
+  if (data.error && !data.ready && auth.role !== 'none') return <ErrorScreen code={data.error} store={store} />;
+  if (auth.role === 'pending' || (auth.role !== 'none' && (!data.ready || !cfg))) return <Loading />;
   if (auth.role === 'none') return <Login store={store} auth={auth} />;
 
   const supType = mode === 'repairs' ? 'parts' : 'devices';
@@ -153,6 +155,12 @@ export default function App({ store }) {
         </div>
       </div>
 
+      {data.error && data.ready && (
+        <div className="banner" style={{ background: 'rgba(255,59,48,.1)', color: '#D70015' }}>{ERRORS[data.error] || 'בעיה בסנכרון עם השרת. המחירים המוצגים הם האחרונים שנטענו.'}</div>
+      )}
+      {isAdmin && pubError && (
+        <div className="banner" style={{ background: 'rgba(255,59,48,.1)', color: '#D70015' }}>המחירים לא עודכנו אצל העובדים: {pubError}</div>
+      )}
       {isAdmin && requests.length > 0 && !customer && (
         <button className="banner" style={{ width: '100%', textAlign: 'right', background: 'rgba(0,122,255,.1)', color: 'var(--blue)' }} onClick={() => { setFocusItem(null); setPanel('users'); }}>
           {requests.length === 1 ? 'בקשת פירוט חדשה מעובד' : `${requests.length} בקשות פירוט חדשות מעובדים`} · לצפייה ואישור ‹
@@ -250,6 +258,41 @@ function ResultRow({ m, mode, repair, storage, catalog, cfg, onOpen }) {
       <div className="main"><div className="t1">{m.model}</div><div className="t2">{sub}</div></div>
       {right}<span className="chev">‹</span>
     </button>
+  );
+}
+
+const ERRORS = {
+  'permission-denied': 'אין הרשאה לקרוא את המחירון. אם המנהל עדכן הרשאות או חוקי אבטחה עכשיו, נסה שוב בעוד דקה.',
+  unavailable: 'אין חיבור לשרת. בדוק את האינטרנט ונסה שוב.',
+};
+
+function ErrorScreen({ code, store }) {
+  return (
+    <div className="login card">
+      <h1>מחירון</h1>
+      <p className="muted" style={{ lineHeight: 1.6 }}>{ERRORS[code] || 'לא הצלחתי לטעון את המחירון.'}</p>
+      <div className="actions" style={{ justifyContent: 'center' }}>
+        <button className="btn primary" onClick={() => location.reload()}>נסה שוב</button>
+        {store.mode === 'cloud' && <button className="btn" onClick={() => store.signOut()}>החלף חשבון</button>}
+      </div>
+      <p className="muted" dir="ltr" style={{ fontSize: 11, marginTop: 14 }}>{code}</p>
+    </div>
+  );
+}
+
+function Loading() {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => { const t = setTimeout(() => setSlow(true), 12000); return () => clearTimeout(t); }, []);
+  return (
+    <div className="login">
+      <div className="muted">טוען…</div>
+      {slow && (
+        <>
+          <p className="muted" style={{ marginTop: 16 }}>הטעינה לוקחת יותר זמן מהרגיל. בדוק את החיבור לאינטרנט.</p>
+          <button className="btn primary" onClick={() => location.reload()}>נסה שוב</button>
+        </>
+      )}
+    </div>
   );
 }
 

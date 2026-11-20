@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { REPAIRS, LABOR_GROUPS, CATEGORY_LABELS } from '../lib/defaults.js';
 import { fmt, Icon } from './util.jsx';
 import ItemsManager from './ItemsManager.jsx';
@@ -9,15 +9,26 @@ const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
 export default function SettingsSheet({ cfg, catalog, lists, store, focus, initialTab, requests = [], onClose, onSaveConfig, toast }) {
   const [d, setD] = useState(() => JSON.parse(JSON.stringify(cfg)));
   const [tab, setTab] = useState(initialTab || (focus ? 'items' : 'labor'));
-  const [busy, setBusy] = useState(false);
-  const set = (fn) => setD((x) => { const y = JSON.parse(JSON.stringify(x)); fn(y); return y; });
+  const [status, setStatus] = useState(''); // '' | 'pending' | 'saving' | 'saved' | 'error'
+  const dirty = useRef(false);
+  const latest = useRef(d);
+  latest.current = d;
+  const set = (fn) => { dirty.current = true; setStatus('pending'); setD((x) => { const y = JSON.parse(JSON.stringify(x)); fn(y); return y; }); };
 
-  const save = async () => {
-    setBusy(true);
-    try { await onSaveConfig(d); toast('ההגדרות נשמרו ועודכנו בכל הסניפים'); onClose(); }
-    catch (e) { toast('השמירה נכשלה: ' + (e?.message || e)); }
-    finally { setBusy(false); }
+  // שמירה אוטומטית (כמו בהגדרות של אייפון): שנייה אחרי השינוי האחרון, ומיד כשיוצאים
+  const flush = async () => {
+    if (!dirty.current) return;
+    dirty.current = false;
+    setStatus('saving');
+    try { await onSaveConfig(latest.current); setStatus('saved'); }
+    catch (e) { dirty.current = true; setStatus('error'); toast('השמירה נכשלה: ' + (e?.message || e)); }
   };
+  useEffect(() => {
+    if (!dirty.current) return undefined;
+    const t = setTimeout(flush, 900);
+    return () => clearTimeout(t);
+  }, [d]);
+  useEffect(() => () => { if (dirty.current) { dirty.current = false; onSaveConfig(latest.current).catch(() => toast('שמירת ההגדרות נכשלה')); } }, []);
 
   const tabs = [['items', 'פריטים'], ['labor', 'עלות עבודה'], ['rules', 'חריגים'], ['margins', 'רווח מכשירים'], ['addons', 'תוספות'], ['suppliers', 'ספקים'], ['general', 'כללי'], ['users', requests.length ? `עובדים (${requests.length})` : 'עובדים']];
 
@@ -26,8 +37,8 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
       <div className="sheet-bg" onClick={onClose} />
       <div className="sheet" role="dialog" aria-label="הגדרות">
         <div className="sheet-inner">
-          <div className="sheet-head"><button className="back" onClick={onClose}>‹ ביטול</button><h2>הגדרות</h2>
-            {tab !== 'items' && tab !== 'users' && <button className="pill-btn" disabled={busy} onClick={save}>שמור</button>}</div>
+          <div className="sheet-head"><button className="back" onClick={onClose}>‹ סגור</button><h2>הגדרות</h2>
+            <span className={'save-state ' + status}>{status === 'saving' || status === 'pending' ? 'שומר…' : status === 'saved' ? 'נשמר ✓' : status === 'error' ? 'השמירה נכשלה' : ''}</span></div>
           <div className="pills" style={{ paddingTop: 4 }}>
             {tabs.map(([k, l]) => <button key={k} className={'pill' + (tab === k ? ' on' : '')} onClick={() => setTab(k)}>{l}</button>)}
           </div>

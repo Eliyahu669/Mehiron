@@ -39,16 +39,15 @@ const TAGS = new Set(['new', 'active', 'no', 'dcs', 'esim', 'dualsim', 'sim', 'w
   'gps', 'nfc', 'pr', '5g', '4g', 'g', 'gb', 'tb', 'lte', 'ds']);
 
 const OTHER_BRANDS = {
-  oneplus: 'OnePlus', pixel: 'Google Pixel', google: 'Google', nokia: 'Nokia', motorola: 'Motorola', moto: 'Motorola',
+  oneplus: 'OnePlus', pixel: 'Google', google: 'Google', nokia: 'Nokia', motorola: 'Motorola', moto: 'Motorola',
   honor: 'Honor', huawei: 'Huawei', oppo: 'Oppo', realme: 'Realme', vivo: 'Vivo', nothing: 'Nothing', tcl: 'TCL', zte: 'ZTE',
 };
 
 export function normText(s) {
   let t = ' ' + String(s || '').toLowerCase() + ' ';
   t = t.replace(/[‎‏‪-‮ְ-ׇ]/g, ''); // סימני כיוון וניקוד
-  t = t.replace(/\{[^}]*\}/g, ' ').replace(/\([^)]*\)/g, ' ');
   for (const [re, rep] of HEB) t = t.replace(re, rep);
-  t = t.replace(/([a-z0-9])\+/g, '$1 plus ');
+  t = t.replace(/([a-z0-9])\+/g, '$1 plus ').replace(/usb[\s-]?c\b/g, ' usbc ').replace(/[()[\]{}]/g, ' ');
   t = t.replace(/[‼️!?,.:;"'`*()[\]{}|\\/_~＋+–—-]/g, ' ');
   return t.replace(/\s+/g, ' ').trim();
 }
@@ -59,6 +58,12 @@ export function tokenize(s) {
     if (!raw) continue;
     let m;
     if (/^[345]g$/.test(raw)) { out.push(raw); continue; }
+    if (raw === 'promax') { out.push('pro', 'max'); continue; }
+    if ((m = raw.match(/^(ip|iphone)(\d{1,2}e?|x|xr|xs|se)$/))) { out.push(m[1], m[2]); continue; }
+    if ((m = raw.match(/^(\d{1,2})(promax|pro|max|plus|mini)$/))) { out.push(m[1], ...(m[2] === 'promax' ? ['pro', 'max'] : [m[2]])); continue; }
+    if ((m = raw.match(/^([asmjez]\d{1,2})(ultra|plus|lite|edge|core)$/))) { out.push(m[1], m[2]); continue; }
+    if ((m = raw.match(/^z(flip|fold)(\d{1,2})?$/))) { out.push('z', m[1], ...(m[2] ? [m[2]] : [])); continue; }
+    if ((m = raw.match(/^usb-?c$/))) { out.push('usbc'); continue; }
     if ((m = raw.match(/^([12])(tb|t)$/))) { out.push(m[1], 'tb'); continue; }
     if ((m = raw.match(/^(\d+)(new|active|dcs|g|gb|tb)$/))) {
       out.push(m[1]);
@@ -129,7 +134,7 @@ export function identify(text, ctxBrand = null) {
     parseSamsung(tk, used, res);
   } else if (ctxBrand) res.brand = ctxBrand;
 
-  if (res.kind !== 'phone' && res.kind !== 'tablet' && tk.some((t) => /^(charger|adapter|cable|case|מטען|כבל|כיסוי|מגן)$/.test(t))) {
+  if (res.kind !== 'phone' && res.kind !== 'tablet' && tk.some((t) => /^(charger|adapter|cable|case|[הולבמ]?(מטען|מטענים|כבל|כבלים|כיסוי|כיסויים|מגן|מגנים))$/.test(t))) {
     res.kind = 'accessory'; res.category = 'accessory';
   }
   if (res.kind === 'audio' || res.kind === 'watch') res.category = 'wearable';
@@ -145,17 +150,25 @@ export function identify(text, ctxBrand = null) {
     // שם כללי: הטקסט המקורי באנגלית כפי שנכתב (בלי מילים בעברית)
     const latin = String(text || '').replace(/[֐-׿"'׳״!]+/g, ' ').replace(/[^\x20-\x7e]/g, ' ')
       .replace(/\s*-\s*$/, '').replace(/\s+/g, ' ').trim();
-    res.model = latin || null;
     res.storage = null;
-    res.extra = extra.filter((t) => /^[֐-׿]/.test(t) || (res.kind === 'watch' && TAGS.has(t))).join(' ');
+    if ((latin.match(/[a-z]/gi) || []).length >= 3 || res.kind === 'watch') {
+      res.model = latin;
+      res.extra = extra.filter((t) => /^[֐-׿]/.test(t) || (res.kind === 'watch' && TAGS.has(t))).join(' ');
+    } else {
+      // בעיקר עברית (למשל "כבל טעינה מקורי 25W") – השם כפי שנכתב
+      const full = String(text || '').replace(/[\u200e\u200f\u202a-\u202e]/g, '').replace(/[*_~!]+/g, ' ').replace(/\s*-\s*$/, '').replace(/\s+/g, ' ').trim();
+      res.model = full || latin || null;
+      res.extra = '';
+    }
     if (res.kind === 'watch') {
       const w = tk.filter((t) => t !== 'watch' && !TAGS.has(t) && !/^[֐-׿]/.test(t) && !/^r\d{3}/.test(t));
       res.model = 'Watch ' + w.map((x) => (x === 'se' ? 'SE' : /^gen\d/.test(x) ? 'Gen ' + x.slice(3) : /^\d+m$/.test(x) ? x + 'm' : cap(x))).join(' ');
     }
     if (res.kind === 'audio' && res.brand === 'Samsung') res.model = res.model || 'Buds';
   } else if (res.kind === 'audio' && res.model === 'AirPods') {
-    const rest = extra.filter((t) => ['pro', 'max', 'anc'].includes(t) || /^\d$/.test(t));
-    res.model = ['AirPods', ...rest.map((w) => (w === 'anc' ? 'ANC' : cap(w)))].join(' ');
+    const rest = extra.filter((t) => ['pro', 'max', 'anc', 'usbc', 'magsafe', 'lightning'].includes(t) || /^\d$/.test(t));
+    const lbl = { anc: 'ANC', usbc: 'USB-C', magsafe: 'MagSafe' };
+    res.model = ['AirPods', ...rest.map((w) => lbl[w] || cap(w))].join(' ');
   }
   return res;
 }
@@ -182,7 +195,7 @@ function parseIphone(tk, used, res) {
 
 function parseSamsung(tk, used, res) {
   res.brand = 'Samsung'; res.kind = 'phone';
-  let letter = null, label = null;
+  let letter = null, label = null, after = 0;
   const zi = tk.findIndex((t) => t === 'z');
   let fi = tk.findIndex((t, k) => (t === 'flip' || t === 'fold') && /^\d{1,2}$/.test(tk[k + 1] || ''));
   if (fi < 0) fi = tk.findIndex((t) => t === 'flip' || t === 'fold');
@@ -191,7 +204,7 @@ function parseSamsung(tk, used, res) {
     const num = /^\d{1,2}$/.test(tk[fi + 1] || '') ? tk[fi + 1] : '';
     label = `Z ${cap(tk[fi])}${num ? ' ' + num : ''}`;
     if (zi >= 0) used.add(zi); used.add(fi); if (num) used.add(fi + 1);
-    var after = fi + (num ? 2 : 1);
+    after = fi + (num ? 2 : 1);
   } else {
     const ni = tk.findIndex((t, k) => t === 'note' && /^\d{1,2}$/.test(tk[k + 1] || ''));
     const mi = tk.findIndex((t) => /^[asmjez]\d{1,2}[a-z]*$/.test(t));
@@ -226,7 +239,7 @@ function parseXiaomi(tk, used, res) {
   if (si >= 0) used.add(si);
   const mi = tk.indexOf('mi'); if (mi >= 0) used.add(mi);
   const parts = [];
-  for (let j = si + 1; j < tk.length && parts.length < 3; j++) {
+  for (let j = si + 1; j < tk.length && parts.length < 4; j++) {
     const t = tk[j];
     if (/^\d+$/.test(t) && STORAGE.has(Number(t))) break;
     if (TAGS.has(t)) break;
@@ -246,8 +259,8 @@ function parseXiaomi(tk, used, res) {
 function parseOther(tk, used, res, b) {
   res.brand = OTHER_BRANDS[b]; res.kind = 'phone'; res.category = 'mid';
   const bi = tk.indexOf(b); used.add(bi);
-  const parts = [];
-  for (let j = bi + 1; j < tk.length && parts.length < 3; j++) {
+  const parts = b === 'pixel' ? ['Pixel'] : [];
+  for (let j = bi + 1; j < tk.length && parts.length < 4; j++) {
     const t = tk[j];
     if ((/^\d+$/.test(t) && STORAGE.has(Number(t))) || TAGS.has(t) || /^[֐-׿]/.test(t)) break;
     parts.push(/^[a-z]+$/.test(t) ? cap(t) : t.toUpperCase()); used.add(j);

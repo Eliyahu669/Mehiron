@@ -5,10 +5,21 @@ import { REPAIRS } from './defaults.js';
 export function buildCatalog(lists) {
   const devices = [], parts = [];
   const models = new Map();
+  const partIndex = new Map(); // `${mkey}|${partType}` → חלקים
+  const deviceIndex = new Map(); // mkey → מכשירים
   for (const [supplierId, doc] of Object.entries(lists || {})) {
     for (const it of doc.items || []) {
       const x = { ...it, supplierId };
-      (x.kind === 'part' ? parts : devices).push(x);
+      if (x.kind === 'part') {
+        parts.push(x);
+        const k = `${x.mkey}|${x.partType}`;
+        if (!partIndex.has(k)) partIndex.set(k, []);
+        partIndex.get(k).push(x);
+      } else {
+        devices.push(x);
+        if (!deviceIndex.has(x.mkey)) deviceIndex.set(x.mkey, []);
+        deviceIndex.get(x.mkey).push(x);
+      }
       if (!models.has(x.mkey)) {
         models.set(x.mkey, {
           mkey: x.mkey, brand: x.brand, model: x.model, family: x.family, tier: x.tier,
@@ -20,26 +31,34 @@ export function buildCatalog(lists) {
       if (x.kind === 'part') m.hasParts = true; else m.hasDevices = true;
     }
   }
-  return { devices, parts, models: [...models.values()] };
+  return { devices, parts, partIndex, deviceIndex, models: [...models.values()] };
 }
 
+// מילת תיקון, גם עם תחילית: "למסך", "הסוללה", "בשקע"
+const repairOf = (w) => {
+  const x = w.toLowerCase();
+  for (const r of REPAIRS) if (r.words.includes(x) || (/^[הולבמ][\u0590-\u05ff]/.test(x) && r.words.includes(x.slice(1)))) return r.id;
+  return null;
+};
+
 export function detectRepair(query) {
-  const words = String(query || '').toLowerCase().split(/[\s,.\-/]+/).filter(Boolean);
-  for (const r of REPAIRS) if (words.some((w) => r.words.includes(w))) return r.id;
+  for (const w of String(query || '').split(/[\s,.\-/]+/)) { const r = w && repairOf(w); if (r) return r; }
   return null;
 }
 
 function stripRepairWords(query) {
-  const all = new Set(REPAIRS.flatMap((r) => r.words));
-  return String(query || '').split(/\s+/).filter((w) => !all.has(w.toLowerCase())).join(' ');
+  return String(query || '').split(/\s+/).filter((w) => !repairOf(w)).join(' ');
 }
+
+// נפח לא שייך לשם הדגם (64 ומעלה; 16/32 עלולים להיות מספר דגם כמו iPhone 16)
+const isStorageTok = (t) => ['64', '128', '256', '512', '1024', 'gb', 'tb'].includes(t);
 
 const BRAND_ORDER = { Apple: 0, Samsung: 1, Xiaomi: 2 };
 
 export function searchModels(query, catalog, { brand = null, kindFilter = null } = {}) {
   const repair = detectRepair(query);
   const rest = stripRepairWords(query);
-  const q = searchTokens(rest);
+  const q = searchTokens(rest).filter((t) => !isStorageTok(t));
   const raw = tokenize(rest);
   if (!brand) {
     if (raw.some((t) => ['iphone', 'ip', 'apple', 'airpods', 'ipad'].includes(t))) brand = 'Apple';

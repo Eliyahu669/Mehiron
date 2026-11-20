@@ -1,7 +1,7 @@
 import fs from 'fs';
-import { parseMessage } from '../src/lib/parser.js';
+import { parseMessage } from '../../src/lib/parser.js';
 
-const dir = new URL('./fixtures/', import.meta.url);
+const dir = new URL('../fixtures/', import.meta.url);
 const show = process.argv.includes('-v');
 for (const f of ['asi_main.txt', 'asi_update.txt', 'rp.txt']) {
   const items = parseMessage(fs.readFileSync(new URL(f, dir), 'utf8'), { kind: 'devices' });
