@@ -85,6 +85,7 @@ export function makeItem(name, note, price, ctxBrand, raw, opts) {
   item.mkey = modelKey(id);
   item.key = isPart ? `${item.mkey}|${item.partType}|${item.variant}` : `${item.mkey}|${item.storage || ''}|${item.variant}`;
   item.ok = Boolean(item.model && price > 0);
+  if (id.excluded) item.excluded = true;
   return item;
 }
 
@@ -102,6 +103,8 @@ export function parseMessage(text, opts = {}) {
   const lines = String(text || '').split(/\r?\n/);
   const tabLines = lines.filter((l) => l.includes('\t')).length;
   const items = tabLines >= 3 && tabLines >= lines.filter((l) => l.trim()).length * 0.3 ? parseTable(lines, opts) : parseFree(lines, opts);
+  const kept = items.filter((it) => !it.excluded);
+  items.length = 0; items.push(...kept);
   // שורות כפולות אצל אותו ספק (אותו דגם ואיכות) – מקבלות מפתח ייחודי לפי סדר הופעה
   const seen = new Map();
   for (const it of items) {
@@ -198,4 +201,31 @@ export function mergeItems(oldItems, newItems, { replace = true, now = Date.now(
     if (!replace && idx.has(n.key)) out[idx.get(n.key)] = rec; else { idx.set(n.key, out.length); out.push(rec); }
   }
   return out;
+}
+
+/** פריט שנוצר או נערך ידנית. אם השם לא מזוהה כדגם מוכר – נשמר בדיוק כפי שנכתב */
+export function manualItem(f, kind, prev = null, now = Date.now()) {
+  const opts = { kind: kind === 'parts' ? 'parts' : 'devices', partType: f.partType || 'screen' };
+  const name = String(f.name || '').trim();
+  const storageTxt = opts.kind === 'devices' && f.storage ? ` ${f.storage}` : '';
+  const it = makeItem(name + storageTxt, f.variant || '', Number(f.price), null, prev?.raw || 'ידני', opts);
+  if (!it.family) { // לא זוהה דגם מובנה – שם חופשי
+    it.model = name;
+    it.mkey = `${(it.brand || '').toLowerCase()}|${name.toLowerCase()}`;
+    it.name = opts.kind === 'parts' ? name : [name, f.storage ? (f.storage >= 1024 ? `${f.storage / 1024}TB` : `${f.storage}GB`) : ''].filter(Boolean).join(' ');
+    it.storage = opts.kind === 'devices' && f.storage ? Number(f.storage) : null;
+    it.key = opts.kind === 'parts' ? `${it.mkey}|${it.partType}|${it.variant}` : `${it.mkey}|${it.storage || ''}|${it.variant}`;
+  }
+  it.variant = String(f.variant || '').trim();
+  it.key = opts.kind === 'parts' ? `${it.mkey}|${it.partType}|${it.variant}` : `${it.mkey}|${it.storage || ''}|${it.variant}`;
+  if (f.categoryOverride) it.categoryOverride = f.categoryOverride;
+  it.manual = true;
+  it.ok = Boolean(it.model && it.price > 0);
+  const priceChanged = prev && prev.price !== it.price;
+  return {
+    ...it,
+    updatedAt: now,
+    prevPrice: priceChanged ? prev.price : prev?.prevPrice ?? null,
+    changedAt: priceChanged || !prev ? now : prev.changedAt ?? now,
+  };
 }

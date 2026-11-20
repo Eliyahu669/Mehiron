@@ -15,6 +15,8 @@ export const LABOR_GROUPS = [
   { id: 'galaxy:z', label: 'Galaxy Z (מתקפלים)', family: 'galaxy-z', tier: 'z' },
   { id: 'galaxy:s', label: 'Galaxy S (דגל)', family: 'galaxy-s', tier: 's' },
   { id: 'galaxy:a', label: 'Galaxy A (ביניים)', family: 'galaxy-a', tier: 'a' },
+  { id: 'galaxy:note', label: 'Galaxy Note', family: 'galaxy-note' },
+  { id: 'galaxy:mje', label: 'Galaxy M / J / E', families: ['galaxy-m', 'galaxy-j', 'galaxy-e'] },
   { id: 'xiaomi', label: 'Xiaomi / POCO F', family: 'xiaomi' },
   { id: 'redmi', label: 'Redmi / Redmi Note', family: 'redmi' },
 ];
@@ -28,6 +30,8 @@ export const DEFAULT_CONFIG = {
     'galaxy:z': { screen: 500, battery: 200, port: 250, back: 150, camera: 250 },
     'galaxy:s': { screen: 180, battery: 120, port: 150, back: 100, camera: 150 },
     'galaxy:a': { screen: 120, battery: 100, port: 120, back: 80, camera: 100 },
+    'galaxy:note': { screen: 180, battery: 120, port: 150, back: 100, camera: 150 }, // כמו Galaxy S (דגל)
+    'galaxy:mje': { screen: 120, battery: 100, port: 120, back: 80, camera: 100 }, // כמו Galaxy A (ביניים)
     'xiaomi': { screen: 150, battery: 120, port: 150, back: 100, camera: 200 },
     'redmi': { screen: 120, battery: 100, port: 100, back: 80, camera: 120 },
   },

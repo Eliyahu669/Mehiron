@@ -10,7 +10,7 @@ export function roundPrice(v, cfg) {
 
 export function groupFor(model) {
   if (!model) return null;
-  const g = LABOR_GROUPS.find((g) => g.family === model.family && (!g.tier || g.tier === model.tier));
+  const g = LABOR_GROUPS.find((g) => (g.families ? g.families.includes(model.family) : g.family === model.family) && (!g.tier || g.tier === model.tier));
   return g ? g.id : null;
 }
 
@@ -82,7 +82,7 @@ export function repairQuote(model, repair, parts, cfg, addonIds = []) {
 export function categoryFor(item, cfg) {
   const rules = (cfg.laborRules || []).filter((r) => r.category && ruleMatches(r, item.model));
   rules.sort((a, b) => (a.scope === 'model' ? -1 : 0) - (b.scope === 'model' ? -1 : 0) || norm(b.match).length - norm(a.match).length);
-  return rules[0]?.category || item.category || 'other';
+  return item.categoryOverride || rules[0]?.category || item.category || 'other';
 }
 
 export function marginFor(item, cfg) {

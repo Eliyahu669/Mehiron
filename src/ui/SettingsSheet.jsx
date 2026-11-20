@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { REPAIRS, LABOR_GROUPS, CATEGORY_LABELS } from '../lib/defaults.js';
 import { fmt, Icon } from './util.jsx';
+import ItemsManager from './ItemsManager.jsx';
 
 const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
 
-export default function SettingsSheet({ cfg, catalog, store, onClose, onSaveConfig, toast }) {
+export default function SettingsSheet({ cfg, catalog, lists, store, focus, onClose, onSaveConfig, toast }) {
   const [d, setD] = useState(() => JSON.parse(JSON.stringify(cfg)));
-  const [tab, setTab] = useState('labor');
+  const [tab, setTab] = useState(focus ? 'items' : 'labor');
   const [busy, setBusy] = useState(false);
   const set = (fn) => setD((x) => { const y = JSON.parse(JSON.stringify(x)); fn(y); return y; });
 
@@ -17,7 +18,7 @@ export default function SettingsSheet({ cfg, catalog, store, onClose, onSaveConf
     finally { setBusy(false); }
   };
 
-  const tabs = [['labor', 'עלות עבודה'], ['rules', 'חריגים'], ['margins', 'רווח מכשירים'], ['addons', 'תוספות'], ['suppliers', 'ספקים'], ['general', 'כללי'], ...(store.mode === 'cloud' ? [['users', 'משתמשים']] : [])];
+  const tabs = [['items', 'פריטים'], ['labor', 'עלות עבודה'], ['rules', 'חריגים'], ['margins', 'רווח מכשירים'], ['addons', 'תוספות'], ['suppliers', 'ספקים'], ['general', 'כללי'], ...(store.mode === 'cloud' ? [['users', 'משתמשים']] : [])];
 
   return (
     <>
@@ -25,7 +26,7 @@ export default function SettingsSheet({ cfg, catalog, store, onClose, onSaveConf
       <div className="sheet" role="dialog" aria-label="הגדרות">
         <div className="sheet-inner">
           <div className="sheet-head"><button className="back" onClick={onClose}>‹ ביטול</button><h2>הגדרות</h2>
-            <button className="pill-btn" disabled={busy} onClick={save}>שמור</button></div>
+            {tab !== 'items' && tab !== 'users' && <button className="pill-btn" disabled={busy} onClick={save}>שמור</button>}</div>
           <div className="pills" style={{ paddingTop: 4 }}>
             {tabs.map(([k, l]) => <button key={k} className={'pill' + (tab === k ? ' on' : '')} onClick={() => setTab(k)}>{l}</button>)}
           </div>
@@ -127,6 +128,7 @@ export default function SettingsSheet({ cfg, catalog, store, onClose, onSaveConf
           )}
 
           {tab === 'users' && <Users store={store} toast={toast} />}
+          {tab === 'items' && <ItemsManager cfg={cfg} lists={lists} store={store} toast={toast} focus={focus} />}
         </div>
       </div>
     </>

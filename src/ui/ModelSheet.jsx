@@ -3,7 +3,7 @@ import { REPAIRS, CATEGORY_LABELS } from '../lib/defaults.js';
 import { repairQuote, deviceQuotes, freshness, categoryFor } from '../lib/pricing.js';
 import { fmt, Price, Fresh, waLink, copyText, daysLabel, Icon } from './util.jsx';
 
-export default function ModelSheet({ model, catalog, cfg, customer, isAdmin, initialRepair, onClose, onSaveConfig, toast }) {
+export default function ModelSheet({ model, catalog, cfg, customer, isAdmin, initialRepair, onClose, onSaveConfig, toast, onEditItem }) {
   const hasRepairs = model.devKind === 'phone' || model.hasParts;
   const [tab, setTab] = useState(initialRepair || hasRepairs ? 'repairs' : 'devices');
   const sup = useMemo(() => Object.fromEntries((cfg.suppliers || []).map((s) => [s.id, s])), [cfg.suppliers]);
@@ -33,7 +33,7 @@ export default function ModelSheet({ model, catalog, cfg, customer, isAdmin, ini
             <>
               {shown.map((q, i) => (
                 <QuoteCard key={q.repair} q={q} model={model} cfg={cfg} sup={sup} customer={customer} isAdmin={isAdmin}
-                  catalogParts={catalog.parts} defaultOpen={i === 0 || !!initialRepair && q.repair === initialRepair} onSaveConfig={onSaveConfig} toast={toast} />
+                  catalogParts={catalog.parts} defaultOpen={i === 0 || !!initialRepair && q.repair === initialRepair} onSaveConfig={onSaveConfig} toast={toast} onEditItem={onEditItem} />
               ))}
               {!shown.length && <div className="card empty">אין עדיין מחיר עבודה או חלק לדגם הזה.{isAdmin && <><br />אפשר להגדיר עלות עבודה לסדרה או לדגם בהגדרות.</>}</div>}
               {!customer && missing.length > 0 && shown.length > 0 && (
@@ -41,14 +41,14 @@ export default function ModelSheet({ model, catalog, cfg, customer, isAdmin, ini
               )}
             </>
           )}
-          {tab === 'devices' && <Devices model={model} catalog={catalog} cfg={cfg} sup={sup} customer={customer} isAdmin={isAdmin} onSaveConfig={onSaveConfig} toast={toast} />}
+          {tab === 'devices' && <Devices model={model} catalog={catalog} cfg={cfg} sup={sup} customer={customer} isAdmin={isAdmin} onSaveConfig={onSaveConfig} toast={toast} onEditItem={onEditItem} />}
         </div>
       </div>
     </>
   );
 }
 
-function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalogParts, defaultOpen, onSaveConfig, toast }) {
+function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalogParts, defaultOpen, onSaveConfig, toast, onEditItem }) {
   const [open, setOpen] = useState(defaultOpen);
   const [addonIds, setAddonIds] = useState([]);
   const [showInternal, setShowInternal] = useState(false);
@@ -127,7 +127,7 @@ function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalogParts, de
               {o.suppliers.map((p, j) => (
                 <div className="sup-row" key={j}>
                   <span>{j === 0 ? '★ ' : ''}{sup[p.supplierId]?.name || p.supplierId} · {daysLabel(freshness(p.updatedAt, cfg).days)}{p.prevPrice != null ? ` · קודם ${fmt(p.prevPrice)}` : ''}</span>
-                  <span className="num">{fmt(p.price)}</span>
+                  <span><span className="num">{fmt(p.price)}</span>{onEditItem && <button className="disc" style={{ margin: '0 6px 0 0' }} onClick={() => onEditItem({ supplierId: p.supplierId, key: p.key })}>ערוך</button>}</span>
                 </div>
               ))}
               {isAdmin && (
@@ -161,7 +161,7 @@ function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalogParts, de
   );
 }
 
-function Devices({ model, catalog, cfg, sup, customer, isAdmin, onSaveConfig, toast }) {
+function Devices({ model, catalog, cfg, sup, customer, isAdmin, onSaveConfig, toast, onEditItem }) {
   const [showInternal, setShowInternal] = useState(false);
   const list = deviceQuotes(model, catalog.devices, cfg);
   if (!list.length) return <div className="card empty">אין מכשיר כזה במחירוני הספקים.</div>;
@@ -190,6 +190,7 @@ function Devices({ model, catalog, cfg, sup, customer, isAdmin, onSaveConfig, to
                 {d.suppliers.length > 1 && <span className="muted">גם אצל: {d.suppliers.slice(1).map((x) => `${sup[x.supplierId]?.name || x.supplierId} ${fmt(x.price)}`).join(' · ')}</span>}
                 <a className="btn" style={{ height: 32 }} href={waLink(s?.phone || '', `היי, יש במלאי ${d.item.name} ${d.item.variant || ''}?`)} target="_blank" rel="noreferrer">{Icon.box}<span>בדוק מלאי</span></a>
                 <a className="btn" style={{ height: 32 }} href={waLink('', textFor(d))} target="_blank" rel="noreferrer">{Icon.wa}<span>שלח</span></a>
+                {onEditItem && <button className="btn" style={{ height: 32 }} onClick={() => onEditItem({ supplierId: d.item.supplierId, key: d.item.key })}>ערוך פריט</button>}
                 {isAdmin && <input className="input sm num" inputMode="numeric" defaultValue={d.overridden ? d.final : ''} placeholder="ידני"
                   onBlur={(e) => e.target.value !== String(d.overridden ? d.final : '') && setOverride(d.overrideKey, e.target.value)} />}
               </div>
