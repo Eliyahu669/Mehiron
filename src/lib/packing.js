@@ -37,13 +37,14 @@ export function readPriceListDoc(d) {
   return { ...d, items: d.items || [] };
 }
 
-/** מסמך קטלוג לעובדים: גרסה חדשה {z} או ישנה {models} */
+/** מסמך קטלוג לעובדים: {z} של { models, devices } (או של רשימת דגמים בגרסה הקודמת), או {models} ישן */
 export function readCatalogDoc(d) {
-  if (!d) return { models: [] };
+  if (!d) return { models: [], devices: [] };
   if (typeof d.z === 'string') {
     const { z, ...meta } = d;
-    const models = unpack(z, null);
-    return models ? { ...meta, models } : { ...meta, models: [], corrupt: true };
+    const val = unpack(z, null);
+    if (!val) return { ...meta, models: [], devices: [], corrupt: true };
+    return Array.isArray(val) ? { ...meta, models: val, devices: [] } : { ...meta, models: val.models || [], devices: val.devices || [] };
   }
-  return { ...d, models: d.models || [] };
+  return { ...d, models: d.models || [], devices: d.devices || [] };
 }

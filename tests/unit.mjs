@@ -3,9 +3,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { identify, tokenize } from '../src/lib/normalize.js';
 import { extractPrice, parseMessage, mergeItems, manualItem, detectPartType } from '../src/lib/parser.js';
-import { laborFor, repairQuote, deviceQuotes, roundPrice, qualityKey, categoryFor, freshness, afterVat, deviceGroupKey } from '../src/lib/pricing.js';
+import { laborFor, repairQuote, roundPrice, qualityKey, freshness, afterVat } from '../src/lib/pricing.js';
+import { defaultCatalog, rowQuote, rowKey, matchSupplierItems, applySupplierImport, normalizeVersion, migrateDeviceConfig, priceIndex, buildDeviceModels, sheetOf, ignoreKey } from '../src/lib/devices.js';
 import { buildCatalog, activeLists, searchModels, detectRepair } from '../src/lib/catalog.js';
-import { buildPublicCatalog, publicConfig, liteCatalog, getRepairQuote, getDeviceQuotes } from '../src/lib/publish.js';
+import { buildPublicCatalog, buildFullCatalog, publicConfig, liteCatalog, getRepairQuote, getDeviceQuotes } from '../src/lib/publish.js';
 import { pack, unpack, readPriceListDoc, readCatalogDoc, MAX_FIELD } from '../src/lib/packing.js';
 import { bulkPrice, applyBulkPrice, uniqueKey } from '../src/lib/items.js';
 import { DEFAULT_CONFIG as CFG } from '../src/lib/defaults.js';
@@ -50,7 +51,10 @@ test('זיהוי דגמים: סמסונג, שיאומי ואחרים', () => {
     ['S9+ (G965)', 'Galaxy S9 Plus', 'galaxy-s'],
     ['Galaxy M M54', 'Galaxy M54', 'galaxy-m'],
     ['Redmi Note 13 Pro+ 256', 'Redmi Note 13 Pro Plus', 'redmi'],
-    ['Mi 13T 256', 'Mi 13T', 'xiaomi'],
+    ['Mi 13T 256', 'Xiaomi 13T', 'xiaomi'],
+    ['Xiaomi 13T 256', 'Xiaomi 13T', 'xiaomi'],
+    ['Mi 11 Lite 128', 'Mi 11 Lite', 'xiaomi'],
+    ['Xiaomi 15 Ultra 512', 'Xiaomi 15 Ultra', 'xiaomi'],
     ['POCO F5 256', 'POCO F5', 'xiaomi'],
   ]) {
     const r = identify(t);
@@ -214,16 +218,82 @@ test('הצעת מחיר לתיקון: חלק זול + עבודה + תוספות,
   assert.equal(qualityKey('מקורי, סאני'), qualityKey('סאני מקורי'));
 });
 
-test('מחיר מכשיר: אחוז רווח לפי קטגוריה, חריג קטגוריה', () => {
+// שורות לבדיקה ברשימת המכשירים + מחיר ספק אחד לכל שורה
+const devRow = (id, brand, model, segment, storage = null) => ({ id, brand, model, segment, series: '', storage, version: '' });
+const quote = (row, price, cfg, more = []) => rowQuote(row, [{ supplierId: 'rp', price }, ...more].sort((a, b) => a.price - b.price), cfg);
+
+test('מחיר מכשיר: אחוז רווח לפי סגמנט, והספק הזול', () => {
   const cfg = mergeConfig(null);
-  const d = devices('iPhone 15 128 ₪3000\nGalaxy A54 128 ₪1000\nAirPods 4 ₪400\nמטען מהיר 20W ₪30').map((x) => ({ ...x, supplierId: 'x' }));
-  const price = (name) => deviceQuotes({ mkey: d.find((x) => x.name.startsWith(name)).mkey }, d, cfg)[0].final;
-  assert.equal(price('iPhone 15'), 3240); // 8%
-  assert.equal(price('Galaxy A54'), 1150); // 15%
-  assert.equal(price('AirPods 4'), 500); // 25%
-  assert.equal(price('מטען'), 60); // 85% → 55.5 → 60
-  const cfg2 = mergeConfig({ laborRules: [{ id: 'z', scope: 'series', match: 'Galaxy A54', category: 'flagship', labor: {} }] });
-  assert.equal(categoryFor(d.find((x) => x.name.startsWith('Galaxy A54')), cfg2), 'flagship');
+  assert.equal(quote(devRow('a', 'Apple', 'iPhone 15', 'flagship', 128), 3000, cfg).final, 3240); // 8%
+  assert.equal(quote(devRow('b', 'Apple', 'iPhone 15 Pro', 'premium', 128), 4000, cfg).final, 4320); // 8%
+  assert.equal(quote(devRow('c', 'Samsung', 'Galaxy A54 5G', 'mid', 128), 1000, cfg).final, 1150); // 15%
+  assert.equal(quote(devRow('d', 'Samsung', 'Galaxy A16', 'entry', 128), 500, cfg).final, 580); // 15% → 575 → 580
+  assert.equal(quote(devRow('e', 'Apple', 'AirPods 4', 'wearable'), 400, cfg).final, 500); // 25%
+  assert.equal(quote(devRow('f', 'Anker', 'מטען מהיר 20W', 'accessory'), 30, cfg).final, 60); // 85% → 55.5 → 60
+  const q = quote(devRow('g', 'Apple', 'iPhone 15', 'flagship', 128), 3100, cfg, [{ supplierId: 'asi', price: 3000 }]);
+  assert.equal(q.best.supplierId, 'asi', 'הספק הזול');
+  assert.equal(q.final, 3240);
+  // סגמנטים חדשים מקבלים את ההגדרות הקודמות: כניסה ← ביניים, פרימיום וטאבלטים ← דגל
+  const old = mergeConfig({ margins: { flagship: 7, mid: 12, wearable: 25, accessory: 85, other: null } });
+  assert.equal(old.margins.entry, 12);
+  assert.equal(old.margins.premium, 7);
+  assert.equal(old.margins.tablet, 7);
+});
+
+test('הודעת ספק מכשירים: מעדכנת רק את השורה של הדגם, גרסה חדשה = שורה חדשה, מה שלא ברשימה הולך לבדיקה', () => {
+  const cfg = mergeConfig(null);
+  const rows = defaultCatalog();
+  const id = (model, storage, version = '') => rows.find((r) => r.model === model && r.storage === storage && r.version === version)?.id;
+  const items = mergeItems([], devices('iPhone 15 Pro 256 ₪4000\nIP 15 PRO 256 DCS 3900\nGalaxy A54 128 ₪1000\nGalaxy A54 128 ₪1050\nNothing Phone 3 256 ₪2500\nGalaxy A34 ₪900'));
+  const m = matchSupplierItems(items, rows, new Map(), cfg);
+  const hit = (rid) => m.hits.find((h) => h.row.id === rid);
+  assert.equal(hit(id('iPhone 15 Pro', 256)).price, 4000);
+  assert.equal(hit(id('Galaxy A54 5G', 128)).price, 1000, 'שורה כפולה בהודעה – המחיר הנמוך');
+  assert.equal(m.created.length, 1);
+  assert.deepEqual([m.created[0].model, m.created[0].storage, m.created[0].version], ['iPhone 15 Pro', 256, 'DCS']);
+  assert.deepEqual(m.review.map((r) => r.status).sort(), ['need-storage', 'new-model']);
+  assert.deepEqual(m.review.find((r) => r.status === 'need-storage').storages, [128, 256], 'A34 בלי נפח – לבחירה');
+
+  // הוספת דגם שלא ברשימה הולכת לגיליון "אחרים"
+  const nothing = m.review.find((r) => r.status === 'new-model');
+  const adds = [{ fields: { brand: 'Nothing', model: 'Phone (3)', segment: 'flagship', storage: 256, year: 2025 }, price: nothing.item.price, raw: nothing.item.raw }];
+  const out = applySupplierImport({ rows, oldItems: [], match: m, adds, replace: true, now: 10 });
+  assert.equal(out.catalog.length, rows.length + 2, 'גרסת DCS + Nothing');
+  assert.equal(sheetOf(out.newRows[0].brand), 'other');
+  assert.equal(out.items.length, 4);
+  assert.ok(out.items.every((x) => x.row && x.kind === 'device'));
+
+  // הודעה שנייה: מחיר השתנה בשורה אחת, ובמצב "החלף" שורות שלא הופיעו מאבדות את המחיר של הספק הזה בלבד
+  const prices = priceIndex({ rp: { items: out.items } }, cfg);
+  const m2 = matchSupplierItems(mergeItems([], devices('iPhone 15 Pro 256 ₪3950')), out.catalog, prices, cfg);
+  const out2 = applySupplierImport({ rows: out.catalog, oldItems: out.items, match: m2, replace: true, now: 20 });
+  assert.equal(out2.catalog, null, 'הרשימה לא השתנתה');
+  assert.equal(out2.items.length, 1);
+  assert.deepEqual([out2.items[0].price, out2.items[0].prevPrice, out2.items[0].changedAt], [3950, 4000, 20]);
+  assert.equal(out2.removed.length, 3);
+
+  // "דלג תמיד"
+  const skip = matchSupplierItems(nothing ? [nothing.item] : [], rows, new Map(), { ...cfg, ignoredDevices: [{ key: nothing.ignoreKey }] });
+  assert.equal(skip.skippedIgnored, 1);
+  assert.equal(skip.review.length, 0);
+  assert.equal(nothing.ignoreKey, ignoreKey(nothing.mkey, 256, ''));
+
+  // גרסאות ומודלים לפי הרשימה
+  assert.equal(normalizeVersion('dcs new esim'), 'DCS New eSIM');
+  assert.equal(normalizeVersion('יבואן רשמי'), 'רשמי');
+  const mods = buildDeviceModels(out.catalog, priceIndex({ rp: { items: out.items } }, cfg));
+  assert.equal(mods.find((x) => x.model === 'iPhone 15 Pro').priced, true);
+  assert.equal(mods.find((x) => x.model === 'iPhone 16').priced, false);
+});
+
+test('מעבר לרשימת מכשירים: מחיר ידני ואחוז שנקבעו לדגם עוברים לשורה המתאימה, תיקונים לא משתנים', () => {
+  const rows = defaultCatalog();
+  const ip = rows.find((r) => r.model === 'iPhone 15' && r.storage === 256 && !r.version);
+  const cfg = migrateDeviceConfig({ priceOverrides: { 'apple|iphone 15|256|': 3999, 'apple|iphone 15|screen|o': 700, 'zzz|nope|64|': 1 }, marginOverrides: { 'apple|iphone 15|256|': 12 } }, rows, ['screen']);
+  assert.equal(cfg.priceOverrides[`row:${ip.id}`], 3999);
+  assert.equal(cfg.marginOverrides[`row:${ip.id}`], 12);
+  assert.equal(cfg.priceOverrides['apple|iphone 15|screen|o'], 700, 'תיקון נשאר');
+  assert.equal(cfg.priceOverrides['zzz|nope|64|'], undefined, 'מכשיר ישן שלא ברשימה נמחק');
 });
 
 test('חיפוש: מילות תיקון עם תחיליות, נפח לא מפריע, סינון יצרן', () => {
@@ -241,25 +311,35 @@ test('חיפוש: מילות תיקון עם תחיליות, נפח לא מפר�
 
 test('קטלוג לעובדים: בלי מחירי ספק, ומחירים זהים למחירים של המנהל', () => {
   const cfg = mergeConfig(null);
+  const ip = defaultCatalog().find((r) => r.model === 'iPhone 15 Pro' && r.storage === 256);
   const lists = {
     parts1: { updatedAt: 5, items: mergeItems([], parts('Galaxy A54 מקורי ₪200\nGalaxy A54 תחליפי ₪120')) },
-    rp: { updatedAt: 6, items: mergeItems([], devices('iPhone 15 Pro 256 ₪4000')) },
+    rp: { updatedAt: 6, items: [{ key: ip.id, row: ip.id, kind: 'device', price: 4000, raw: 'IP 15 PRO 256 4000', updatedAt: 6 }] },
   };
   const pub = buildPublicCatalog(lists, cfg);
   const json = JSON.stringify(pub) + JSON.stringify(publicConfig(cfg));
-  for (const secret of ['"price"', 'supplierId', '"raw"', '4000', '"margins"', 'priceOverrides', 'suppliers', 'marginOverrides', 'marginMin', 'marginMax']) assert.ok(!json.includes(secret), `דליפה: ${secret}`);
-  const full = buildCatalog(lists);
-  const lite = liteCatalog({ ...pub, models: unpack(pack(pub.models), []) });
+  for (const secret of ['"price"', 'supplierId', '"raw"', '4000', '"margins"', 'priceOverrides', 'suppliers', 'marginOverrides', 'marginMin', 'marginMax', ip.id]) assert.ok(!json.includes(secret), `דליפה: ${secret}`);
+  assert.equal(pub.devices.length, 1, 'רק דגמים שיש להם מחיר');
+  const full = buildFullCatalog(lists, cfg);
+  const lite = liteCatalog({ ...pub, ...readCatalogDoc({ z: pack({ models: pub.models, devices: pub.devices }) }) });
   const pcfg = publicConfig(cfg);
   for (const m of full.models) {
     const lm = lite.models.find((x) => x.mkey === m.mkey);
+    if (!lm) { // דגם בלי אף מחיר תיקון לא נשלח לעובדים
+      assert.ok(['screen', 'battery', 'port', 'back', 'camera', 'housing'].every((id) => { const q = getRepairQuote(m, id, full, cfg); return q.laborOnly == null && !q.options.some((o) => o.final != null); }), m.model);
+      continue;
+    }
     for (const addons of [[], ['complex', 'corrosion']]) {
       const a = getRepairQuote(m, 'screen', full, cfg, addons).options.map((o) => o.final);
       const b = getRepairQuote(lm, 'screen', lite, pcfg, addons).options.map((o) => o.final);
       assert.deepEqual(b, a, `${m.model} ${addons}`);
     }
-    assert.deepEqual(getDeviceQuotes(lm, lite, pcfg).map((x) => x.final), getDeviceQuotes(m, full, cfg).map((x) => x.final).filter((x) => x != null));
   }
+  for (const m of lite.devModels) {
+    const fm = full.devModels.find((x) => x.key === m.key);
+    assert.deepEqual(getDeviceQuotes(m, lite, pcfg).map((x) => [x.row.storage, x.final]), getDeviceQuotes(fm, full, cfg).filter((x) => x.final != null).map((x) => [x.row.storage, x.final]));
+  }
+  assert.equal(getDeviceQuotes(lite.devModels[0], lite, pcfg)[0].final, 4320);
   assert.equal(pub.updatedAt, 6);
 });
 
@@ -330,29 +410,27 @@ test('ספק שנמחק מההגדרות לא נספר במחירים; קטגו�
   assert.equal(d.key, 'apple|iphone 15 pro|256|');
 });
 
-test('רווח מכשירים: אחוז עם מינימום/מקסימום בשקלים, סכום קבוע, אחוז לפריט, ומחיר ידני גובר על הכול', () => {
-  const items = mergeItems([], devices('iPhone 15 Pro 256 ₪4100\nGalaxy A55 128 ₪500\niPhone 13 Pro Max 256 ₪3750'));
-  const q = (model, cfg) => deviceQuotes({ mkey: items.find((x) => x.model === model).mkey }, items, cfg)[0];
+test('רווח מכשירים: אחוז עם מינימום/מקסימום בשקלים, סכום קבוע, אחוז לשורה, ומחיר ידני גובר על הכול', () => {
+  const ip = devRow('ip', 'Apple', 'iPhone 15', 'flagship', 256), a55 = devRow('a55', 'Samsung', 'Galaxy A55 5G', 'mid', 128), old = devRow('o', 'Apple', 'iPhone 13 Pro Max', 'premium', 256);
   const base = mergeConfig(null);
-  assert.equal(q('iPhone 15 Pro', base).final, 4430); // 4100 + 8% = 4428 → 4430
-  assert.equal(q('Galaxy A55', base).final, 580); // 500 + 15% = 575 → 580
-  assert.equal(q('iPhone 13 Pro Max', base).final, 4050, '3750 + 8% = 4050 בדיוק (בלי שגיאת שבר שהעלתה ל-4060)');
+  assert.equal(quote(ip, 4100, base).final, 4430); // 4100 + 8% = 4428 → 4430
+  assert.equal(quote(a55, 500, base).final, 580); // 500 + 15% = 575 → 580
+  assert.equal(quote(old, 3750, base).final, 4050, '3750 + 8% = 4050 בדיוק (בלי שגיאת שבר שהעלתה ל-4060)');
 
   const lim = mergeConfig({ marginMax: { flagship: 250 }, marginMin: { mid: 150 } });
-  assert.equal(q('iPhone 15 Pro', lim).final, 4350);
-  assert.equal(q('iPhone 15 Pro', lim).limit, 'max');
-  assert.equal(q('Galaxy A55', lim).final, 650);
-  assert.equal(q('Galaxy A55', lim).limit, 'min');
+  assert.equal(quote(ip, 4100, lim).final, 4350);
+  assert.equal(quote(ip, 4100, lim).limit, 'max');
+  assert.equal(quote(a55, 500, lim).final, 650);
+  assert.equal(quote(a55, 500, lim).limit, 'min');
   const fixed = mergeConfig({ margins: { mid: null }, marginMin: { mid: 200 } });
-  assert.equal(q('Galaxy A55', fixed).final, 700);
-  assert.equal(q('Galaxy A55', fixed).limit, 'fixed');
-  assert.equal(q('Galaxy A55', mergeConfig({ margins: { mid: null } })).final, null, 'בלי אחוז ובלי סכום – אין מחיר');
+  assert.equal(quote(a55, 500, fixed).final, 700);
+  assert.equal(quote(a55, 500, fixed).limit, 'fixed');
+  assert.equal(quote(a55, 500, mergeConfig({ margins: { mid: null } })).final, null, 'בלי אחוז ובלי סכום – אין מחיר');
 
-  const a55 = items.find((x) => x.model === 'Galaxy A55');
-  const own = mergeConfig({ marginMin: { mid: 150 }, marginOverrides: { [deviceGroupKey(a55)]: 20 } });
-  assert.equal(q('Galaxy A55', own).final, 600, 'אחוז לפריט מחליף את הכלל של הקטגוריה (כולל המינימום)');
-  assert.equal(q('Galaxy A55', own).rule.source, 'item');
-  assert.equal(q('Galaxy A55', { ...own, priceOverrides: { [deviceGroupKey(a55)]: 555 } }).final, 555);
+  const own = mergeConfig({ marginMin: { mid: 150 }, marginOverrides: { [rowKey(a55)]: 20 } });
+  assert.equal(quote(a55, 500, own).final, 600, 'אחוז לשורה מחליף את הכלל של הסגמנט (כולל המינימום)');
+  assert.equal(quote(a55, 500, own).rule.source, 'item');
+  assert.equal(quote(a55, 500, { ...own, priceOverrides: { [rowKey(a55)]: 555 } }).final, 555);
 
   assert.equal(afterVat(330, base), 280); // 330 / 1.18
   assert.equal(afterVat(236, base), 200);

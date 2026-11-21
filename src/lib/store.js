@@ -4,6 +4,7 @@
 import { DEFAULT_CONFIG } from './defaults.js';
 import { buildPublicCatalog, publicConfig, sig } from './publish.js';
 import { pack, readPriceListDoc, readCatalogDoc } from './packing.js';
+import { CATALOG_ID } from './devices.js';
 
 const LS_KEY = 'mehiron:v2';
 
@@ -13,7 +14,15 @@ export function mergeConfig(c) {
   return {
     ...d, ...c,
     labor: { ...d.labor, ...(c.labor || {}) },
-    margins: { ...d.margins, ...(c.margins || {}) },
+    // סגמנטים חדשים מקבלים את הערך של הקטגוריה הקרובה מההגדרות הקודמות (כניסה ← ביניים, פרימיום/טאבלטים ← דגל)
+    margins: {
+      ...d.margins,
+      entry: c.margins?.mid ?? d.margins.entry,
+      premium: c.margins?.flagship ?? d.margins.premium,
+      tablet: c.margins?.flagship ?? d.margins.tablet,
+      ...(c.margins || {}),
+    },
+    ignoredDevices: c.ignoredDevices || [],
     marginMin: { ...(c.marginMin || {}) },
     marginMax: { ...(c.marginMax || {}) },
     marginOverrides: c.marginOverrides || {},
@@ -53,7 +62,7 @@ function localStore(seed) {
     const v = viewer();
     if (!previewAs || v?.showCost) return { full: true, config: state.config, lists: state.lists, ready: true };
     const built = buildPublicCatalog(state.lists, state.config);
-    return { full: false, pcfg: mergePublicConfig(publicConfig(state.config)), pub: { ...readCatalogDoc({ z: pack(built.models, 'הקטלוג') }), updatedAt: built.updatedAt }, ready: true };
+    return { full: false, pcfg: mergePublicConfig(publicConfig(state.config)), pub: { ...readCatalogDoc({ z: pack({ models: built.models, devices: built.devices }, 'הקטלוג') }), updatedAt: built.updatedAt }, ready: true };
   };
   const auth = () => (previewAs ? { user: { email: previewAs }, role: 'viewer', showCost: !!viewer()?.showCost } : { user: { email: 'מצב מקומי' }, role: 'admin' });
   const persist = () => {
@@ -83,6 +92,13 @@ function localStore(seed) {
       }
       state = { ...state, lists: next, ...(config ? { config: mergeConfig(config) } : {}) };
       persist();
+    },
+    /** פעם ראשונה: שומר את רשימת המכשירים ההתחלתית (ואת ההגדרות אחרי המעבר) – רק אם עדיין אין רשימה */
+    async initCatalog(rows, config) {
+      if (state.lists[CATALOG_ID]) return false;
+      state = { ...state, lists: { ...state.lists, [CATALOG_ID]: { items: rows.map(slim), updatedAt: Date.now(), supplierName: 'רשימת מכשירים' } }, ...(config ? { config: mergeConfig(config) } : {}) };
+      persist();
+      return true;
     },
     async publish() { return false; },
     async listAllowed() { return state.users; },
@@ -228,6 +244,16 @@ async function cloudStore(firebaseConfig, sdk = null) {
       if (config) batch.set(fs.doc(db, 'app', 'config'), clean(config));
       await batch.commit();
     },
+    /** פעם ראשונה: שומר את רשימת המכשירים ההתחלתית – רק אם בשרת עדיין אין רשימה (לא סומכים על המטמון המקומי) */
+    async initCatalog(rows, config) {
+      const cur = await fs.getDocFromServer(fs.doc(db, 'pricelists', CATALOG_ID));
+      if (cur.exists()) return false;
+      const batch = fs.writeBatch(db);
+      batch.set(fs.doc(db, 'pricelists', CATALOG_ID), clean({ z: pack(rows.map(slim), 'רשימת המכשירים'), v: 2, count: rows.length, updatedAt: Date.now(), supplierName: 'רשימת מכשירים' }));
+      if (config) batch.set(fs.doc(db, 'app', 'config'), clean(config));
+      await batch.commit();
+      return true;
+    },
     /** מנהל בלבד: מפרסם לעובדים קטלוג מחירים סופיים. נכתב רק אם משהו השתנה */
     async publish(lists, cfg) {
       const pcfg = publicConfig(cfg);
@@ -238,9 +264,9 @@ async function cloudStore(firebaseConfig, sdk = null) {
         const cur = await fs.getDoc(fs.doc(db, 'public', 'catalog')).catch(() => null);
         if (cur?.exists() && cur.data().sig === s) { lastSig = s; return false; }
       }
-      const z = pack(pub.models, 'קטלוג המחירים');
+      const z = pack({ models: pub.models, devices: pub.devices }, 'קטלוג המחירים');
       await fs.setDoc(fs.doc(db, 'app', 'public'), clean(pcfg));
-      await fs.setDoc(fs.doc(db, 'public', 'catalog'), { v: 2, z, updatedAt: pub.updatedAt, count: pub.models.length, sig: s });
+      await fs.setDoc(fs.doc(db, 'public', 'catalog'), { v: 3, z, updatedAt: pub.updatedAt, count: pub.models.length + pub.devices.length, sig: s });
       lastSig = s;
       return true;
     },

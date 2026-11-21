@@ -30,9 +30,8 @@ export function qualityKey(q) {
   return String(q || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean).sort().join(' ') || 'סטנדרטי';
 }
 
-// מפתחות "מחיר ידני ללקוח": תיקון = דגם + סוג תיקון + איכות; מכשיר = דגם + נפח + וריאנט (לכל הספקים יחד)
+// מפתח "מחיר ידני ללקוח" לתיקון: דגם + סוג תיקון + איכות (לכל הספקים יחד). במכשירים – row:<מזהה שורה>
 export const repairGroupKey = (mkey, repair, variant) => `${mkey}|${repair}|${qualityKey(variant)}`;
-export const deviceGroupKey = (it) => `${it.mkey}|${it.storage || ''}|${it.variant || ''}`;
 
 /** עלות עבודה לדגם ולסוג תיקון. מחזיר { amount, source } או null אם לא מוגדר */
 export function laborFor(model, repair, cfg) {
@@ -95,25 +94,7 @@ export function repairQuote(model, repair, parts, cfg, addonIds = []) {
   return { repair, label: REPAIRS.find((r) => r.id === repair)?.label, labor, addons, options, laborOnly };
 }
 
-export function categoryFor(item, cfg) {
-  const rules = (cfg.laborRules || []).filter((r) => r.category && ruleMatches(r, item.model));
-  rules.sort((a, b) => (a.scope === 'model' ? -1 : 0) - (b.scope === 'model' ? -1 : 0) || canon(b.match).length - canon(a.match).length);
-  return item.categoryOverride || rules[0]?.category || item.category || 'other';
-}
-
 const num = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
-
-/** כלל הרווח למכשיר: אחוז לפריט (אם נקבע – מחליף הכול), אחרת אחוז הקטגוריה עם מינימום/מקסימום בשקלים */
-export function marginRule(item, cfg) {
-  const cat = categoryFor(item, cfg);
-  const own = num(cfg.marginOverrides?.[deviceGroupKey(item)]);
-  if (own != null) return { pct: own, min: null, max: null, source: 'item', cat };
-  return { pct: num(cfg.margins?.[cat]), min: num(cfg.marginMin?.[cat]), max: num(cfg.marginMax?.[cat]), source: 'category', cat };
-}
-
-export function marginFor(item, cfg) {
-  return marginRule(item, cfg).pct;
-}
 
 /** רווח בשקלים לפי הכלל. limit: 'min' / 'max' (הוגבל) או 'fixed' (סכום קבוע בלי אחוז). null = אין כלל */
 export function profitFor(cost, rule) {
@@ -127,30 +108,3 @@ export function profitFor(cost, rule) {
 
 /** כמה נשאר מהרווח אחרי מע"מ (המחירים כוללים מע"מ, ולכן למדינה הולך vat/(100+vat) מהרווח) */
 export const afterVat = (profit, cfg) => (profit == null ? null : Math.round(profit / (1 + (num(cfg.vat) ?? 18) / 100)));
-
-/** הצעת מחיר למכשיר למכירה: לכל וריאנט – הספק הזול ביותר */
-export function deviceQuotes(model, devices, cfg) {
-  const relevant = devices.filter((d) => d.mkey === model.mkey);
-  const groups = new Map();
-  for (const d of relevant) {
-    const k = `${d.storage || ''}|${d.variant || ''}`;
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(d);
-  }
-  return [...groups.values()].map((list) => {
-    list.sort((a, b) => a.price - b.price);
-    const best = list[0];
-    const rule = marginRule(best, cfg);
-    const pr = profitFor(best.price, rule);
-    const overrideKey = deviceGroupKey(best);
-    const ov = cfg.priceOverrides?.[overrideKey] ?? cfg.priceOverrides?.[best.key];
-    const override = ov == null || ov === '' ? null : ov;
-    const computed = pr ? roundPrice(best.price + pr.amount, cfg) : null;
-    return {
-      item: best, suppliers: list, margin: rule.pct, rule, limit: pr?.limit ?? null, overrideKey, legacyKey: best.key,
-      final: override != null ? Number(override) : computed,
-      computed, overridden: override != null,
-      profit: (override != null ? Number(override) : computed) != null ? (override != null ? Number(override) : computed) - best.price : null,
-    };
-  }).sort((a, b) => (a.item.storage || 0) - (b.item.storage || 0) || (a.final ?? 1e9) - (b.final ?? 1e9));
-}

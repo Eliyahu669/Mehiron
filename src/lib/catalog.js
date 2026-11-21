@@ -10,36 +10,43 @@ export function activeLists(lists, cfg) {
   return out;
 }
 
-export function buildCatalog(lists) {
-  const devices = [], parts = [];
+const PHONE_SEGMENTS = new Set(['entry', 'mid', 'flagship', 'premium']);
+
+/**
+ * קטלוג התיקונים: דגמים ממחירוני ספקי החלקים, ועוד כל הטלפונים שברשימת המכשירים (rows) –
+ * כדי שגם דגם בלי חלק מספק יופיע עם מחיר עבודה. המכשירים למכירה עצמם מנוהלים ב-devices.js
+ */
+export function buildCatalog(lists, rows = null) {
+  const parts = [];
   const models = new Map();
   const partIndex = new Map(); // `${mkey}|${partType}` → חלקים
-  const deviceIndex = new Map(); // mkey → מכשירים
   for (const [supplierId, doc] of Object.entries(lists || {})) {
     for (const it of doc.items || []) {
+      if (it.kind !== 'part') continue;
       const x = { ...it, supplierId };
-      if (x.kind === 'part') {
-        parts.push(x);
-        const k = `${x.mkey}|${x.partType}`;
-        if (!partIndex.has(k)) partIndex.set(k, []);
-        partIndex.get(k).push(x);
-      } else {
-        devices.push(x);
-        if (!deviceIndex.has(x.mkey)) deviceIndex.set(x.mkey, []);
-        deviceIndex.get(x.mkey).push(x);
-      }
+      parts.push(x);
+      const k = `${x.mkey}|${x.partType}`;
+      if (!partIndex.has(k)) partIndex.set(k, []);
+      partIndex.get(k).push(x);
       if (!models.has(x.mkey)) {
         models.set(x.mkey, {
           mkey: x.mkey, brand: x.brand, model: x.model, family: x.family, tier: x.tier,
-          category: x.category, devKind: x.devKind, hasParts: false, hasDevices: false,
-          tokens: searchTokens(`${x.brand || ''} ${x.model}`),
+          devKind: x.devKind, hasParts: true, tokens: searchTokens(`${x.brand || ''} ${x.model}`),
         });
       }
-      const m = models.get(x.mkey);
-      if (x.kind === 'part') m.hasParts = true; else m.hasDevices = true;
     }
   }
-  return { devices, parts, partIndex, deviceIndex, models: [...models.values()] };
+  for (const r of rows || []) {
+    if (!PHONE_SEGMENTS.has(r.segment)) continue;
+    const id = identify(r.model, r.brand);
+    const mkey = modelKey(id);
+    if (!id.model || models.has(mkey)) continue;
+    models.set(mkey, {
+      mkey, brand: id.brand || r.brand, model: id.model, family: id.family, tier: id.tier,
+      devKind: 'phone', hasParts: false, tokens: searchTokens(`${id.brand || r.brand || ''} ${id.model}`),
+    });
+  }
+  return { parts, partIndex, models: [...models.values()] };
 }
 
 // מילת תיקון, גם עם תחילית: "למסך", "הסוללה", "בשקע"
@@ -90,12 +97,12 @@ export function searchModels(query, catalog, { brand = null, kindFilter = null }
     if (ok) scored.push({ m, s: s - (m.tokens.length - q.length) * 0.5 });
   }
   // דגם שלא קיים במחירונים אבל מזוהה (למשל אייפון בלי מחירון חלקים) – עדיין אפשר לחשב עבודה
-  if (q.length) {
+  if (q.length && kindFilter !== 'devices') {
     const id = identify(rest);
     if (id.family && id.kind === 'phone') {
       const mkey = modelKey(id);
       if (!scored.some((x) => x.m.mkey === mkey) && (!brand || brand === id.brand)) {
-        scored.push({ m: { mkey, brand: id.brand, model: id.model, family: id.family, tier: id.tier, category: id.category, devKind: 'phone', hasParts: false, hasDevices: false, tokens: searchTokens(`${id.brand} ${id.model}`), synthetic: true }, s: q.length * 2 + 1 });
+        scored.push({ m: { mkey, brand: id.brand, model: id.model, family: id.family, tier: id.tier, devKind: 'phone', hasParts: false, tokens: searchTokens(`${id.brand} ${id.model}`), synthetic: true }, s: q.length * 2 + 1 });
       }
     }
   }

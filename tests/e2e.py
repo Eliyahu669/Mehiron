@@ -79,6 +79,16 @@ async def main():
             await back(pg); await back(pg); s = await ui(pg); check(s['mode'] == 'מחירון מכשירים' and s['q'] == '', f'אחורה: נסגר הדגם ונוקה החיפוש {s}')
             await back(pg); s = await ui(pg); check(s['mode'] == 'מחירון תיקונים', f'אחורה חזר למחירון תיקונים {s}')
 
+            print('מחירון מכשירים: סינון לפי חברה ורמת גימור, החדשים קודם')
+            await pg.click('.mode-seg button:has-text("מכשירים")'); await pg.wait_for_timeout(150)
+            await pg.click('.topbar .pill:has-text("Samsung")'); await pg.wait_for_timeout(250)
+            rows = await pg.locator('.card.list .row').all_inner_texts()
+            check(len(rows) >= 3 and all(r.startswith('Galaxy') for r in rows), f'רק סמסונג: {[r.splitlines()[0] for r in rows[:4]]}')
+            await pg.click('.topbar .pill:has-text("פרימיום")'); await pg.wait_for_timeout(250)
+            rows2 = await pg.locator('.card.list .row').all_inner_texts()
+            check(0 < len(rows2) < len(rows) and all('Ultra' in r or 'Z ' in r for r in rows2), f'סמסונג פרימיום: {[r.splitlines()[0] for r in rows2]}')
+            await back(pg); await back(pg); await back(pg); s = await ui(pg); check(s['mode'] == 'מחירון תיקונים' and s['pills'] == [], f'אחורה: בוטלו הסינונים וחזרנו לתיקונים {s}')
+
             print('בחירה מרובה: שינוי מחיר גורף ומחיקה')
             await pg.click('.icon-btn[title="הגדרות"]'); await pg.wait_for_timeout(200)
             await pg.click('.sheet .pill:has-text("פריטים")'); await pg.click('.sheet .pill:has-text("ספק חלקים")'); await pg.wait_for_timeout(200)
@@ -145,7 +155,7 @@ async def main():
             await pg3.wait_for_timeout(200)
             check('הקובץ ירד' in await pg3.inner_text('.toast'), 'הודעת ייצוא')
             wb = openpyxl.load_workbook(xpath)
-            check(wb.sheetnames[:2] == ['מחירון תיקונים', 'מחירון מכשירים'], f'גיליונות: {wb.sheetnames}')
+            check(wb.sheetnames[:5] == ['מחירון תיקונים', 'Apple', 'Samsung', 'Xiaomi', 'אחרים'], f'גיליונות: {wb.sheetnames}')
             ws = wb['מחירון תיקונים']; h = {c.value: c.column for c in ws[1]}
             sup_name = ws.cell(2, h['ספק']).value
             ws.cell(2, h['מחיר ספק']).value = 999
@@ -154,9 +164,10 @@ async def main():
             ws.delete_rows(3, 1)
             n = ws.max_row + 1
             for k, v in {'ספק': sup_name, 'דגם': 'Galaxy A99', 'סוג חלק': 'סוללה', 'איכות': 'מקורי', 'מחיר ספק': 123}.items(): ws.cell(n, h[k]).value = v
-            wd = wb['מחירון מכשירים']; hd = {c.value: c.column for c in wd[1]}
-            dev_row = next(r for r in range(2, wd.max_row + 1) if str(wd.cell(r, hd['דגם']).value or '').startswith('iPhone'))
-            dev_model = wd.cell(dev_row, hd['דגם']).value
+            wd = wb['Apple']; hd = {c.value: c.column for c in wd[1]}
+            check(list(hd)[:7] == ['יצרן', 'רמות גימור/סגמנטציה', 'סדרה', 'שם הדגם', 'נפחי אחסון זמינים', 'גרסה', 'שנת השקה'], f'עמודות המכשירים: {list(hd)[:9]}')
+            dev_row = next(r for r in range(2, wd.max_row + 1) if wd.cell(r, hd['מחיר ללקוח']).value and str(wd.cell(r, hd['שם הדגם']).value).startswith('iPhone 1'))
+            dev_model = wd.cell(dev_row, hd['שם הדגם']).value
             wd.cell(dev_row, hd['מחיר ללקוח']).value = 7777
             epath = f'{SHOTS}/edited.xlsx'; wb.save(epath)
             await pg3.set_input_files('.sheet input[type=file]', epath); await pg3.wait_for_timeout(1200)
@@ -183,23 +194,50 @@ async def main():
             await back(pg3); await pg3.click('.mode-seg button:has-text("תיקונים")'); await pg3.wait_for_timeout(150)
             await pg3.close()
 
-            print('רווח מכשירים: מינימום בשקלים לקטגוריה ואחוז רווח לפריט')
+            print('רווח מכשירים: מינימום בשקלים לרמת גימור ואחוז רווח לשורה')
             pg4 = await ctx.new_page(); pg4.on('pageerror', lambda e: errs.append(str(e)))
             await pg4.goto(URL); await pg4.wait_for_timeout(700)
             await pg4.click('.icon-btn[title="הגדרות"]'); await pg4.click('.sheet .pill:has-text("רווח מכשירים")'); await pg4.wait_for_timeout(200)
+            labels = [t.split('\n')[0] for t in await pg4.locator('.margin-row').all_inner_texts()]
+            check(len(labels) == 7 and labels[0].startswith('מכשירי כניסה') and labels[3].startswith('מכשירי פרימיום'), f'רמות הגימור בהגדרות: {labels}')
             await pg4.locator('.margin-row', has_text='מכשירי ביניים').locator('label:has-text("מינימום") input').fill('150'); await pg4.wait_for_timeout(1300)
             await back(pg4, 300)
-            await pg4.click('.mode-seg button:has-text("מכשירים")'); await pg4.click('.search input'); await pg4.keyboard.type('Galaxy A08', delay=10); await pg4.wait_for_timeout(300)
+            await pg4.click('.mode-seg button:has-text("מכשירים")'); await pg4.click('.search input'); await pg4.keyboard.type('Redmi Note 11', delay=10); await pg4.wait_for_timeout(300)
             await pg4.click('.card.list .row >> nth=0'); await pg4.wait_for_timeout(300)
-            price = await pg4.inner_text('.sheet .opt .p'); check(price.startswith('630'), f'480 + 15% = 552, מינימום 150 ← 630: {price}')
+            price = await pg4.inner_text('.sheet .opt .p'); check(price.startswith('570'), f'420 + 15% = 483, מינימום 150 ← 570: {price}')
             await pg4.click('.sheet button:has-text("הצג פירוט פנימי")'); await pg4.wait_for_timeout(150)
             sub = await pg4.inner_text('.sheet .opt .q'); check('מינימום' in sub and 'אחרי מע"מ 127' in sub, f'פירוט: {sub!r}')
             await pg4.fill('.dev-admin label:has-text("רווח לפריט") input', '20'); await pg4.keyboard.press('Tab'); await pg4.wait_for_timeout(500)
-            price = await pg4.inner_text('.sheet .opt .p'); check(price.startswith('580'), f'אחוז לפריט 20% מחליף את המינימום: {price}')
+            price = await pg4.inner_text('.sheet .opt .p'); check(price.startswith('510'), f'אחוז לשורה 20% מחליף את המינימום (504 ← 510): {price}')
             check('20% לפריט' in await pg4.inner_text('.sheet .opt .q'), 'הפירוט מציין אחוז לפריט')
             await pg4.screenshot(path=f'{SHOTS}/e2e-margin.png')
             await back(pg4); await pg4.click('.mode-seg button:has-text("תיקונים")'); await pg4.wait_for_timeout(150)
             await pg4.close()
+
+            print('הודעת ספק מכשירים: מעדכנת את הדגם ברשימה, ודגם שלא ברשימה – הוסף/דלג')
+            pg5 = await ctx.new_page(); pg5.on('pageerror', lambda e: errs.append(str(e)))
+            await pg5.goto(URL); await pg5.wait_for_timeout(700)
+            await pg5.click('text=עדכן מחירון'); await pg5.wait_for_timeout(200)
+            await pg5.select_option('.sheet select >> nth=0', value='rp'); await pg5.wait_for_timeout(100)
+            await pg5.click('.sheet button:has-text("עדכון חלקי")')
+            await pg5.fill('.sheet textarea', 'IP 16E 128 רשמי 2100\nNothing Phone 3 256GB 2500'); await pg5.click('.sheet button:has-text("פענח")'); await pg5.wait_for_timeout(300)
+            tags = await pg5.inner_text('.sheet .stat')
+            check('ברשימה 1' in tags and 'לא ברשימה 1' in tags, f'סיכום: {tags!r}')
+            check(await pg5.locator('.rv .rv-seg button.on:has-text("דלג")').count() == 1, 'ברירת המחדל: דלג')
+            await pg5.click('.rv .rv-seg button:has-text("הוסף")'); await pg5.wait_for_timeout(100)
+            await pg5.fill('.rv-form label:has-text("חברה") input', 'Nothing'); await pg5.fill('.rv-form label:has-text("שם הדגם") input', 'Phone (3)')
+            await pg5.select_option('.rv-form label:has-text("סגמנט") select', label='מכשירי דגל')
+            await pg5.screenshot(path=f'{SHOTS}/e2e-device-review.png')
+            await pg5.click('.sheet button:has-text("שמור ועדכן")'); await pg5.wait_for_timeout(500)
+            toast = await pg5.inner_text('.toast'); check('נוספו לרשימה 1' in toast, f'הודעה: {toast}')
+            await pg5.click('.mode-seg button:has-text("מכשירים")'); await pg5.click('.topbar .pill:has-text("אחרים")'); await pg5.wait_for_timeout(250)
+            rows = await pg5.locator('.card.list .row').all_inner_texts()
+            check(any('Phone (3)' in r and '2,700' in r for r in rows), f'נוסף לגיליון "אחרים" עם מחיר 2500 + 8% = 2,700: {rows}')
+            await pg5.click('.topbar .pill:has-text("אחרים")'); await pg5.click('.search input'); await pg5.keyboard.type('16e', delay=10); await pg5.wait_for_timeout(300)
+            await pg5.click('.card.list .row >> nth=0'); await pg5.wait_for_timeout(300)
+            t = await pg5.inner_text('.sheet'); check('2,420' in t, 'iPhone 16e 128 רשמי: 2100 + 15% ← 2,420')
+            await back(pg5); await pg5.click('.mode-seg button:has-text("תיקונים")'); await pg5.wait_for_timeout(150)
+            await pg5.close()
 
             print('אין אף רשומת היסטוריה שנוצרה בלי פעולת משתמש')
             # (הדף כבר נסגר; בודקים בהרצה נפרדת קצרה)

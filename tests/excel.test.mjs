@@ -3,10 +3,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
-import { buildWorkbook, readWorkbook, planImport, parseNum, parseStorage, exportRows, hardenExcelJS, SHEET_REPAIRS, SHEET_DEVICES } from '../src/lib/excel.js';
+import { buildWorkbook, readWorkbook, planImport, parseNum, parseStorage, exportRows, hardenExcelJS, SHEET_REPAIRS } from '../src/lib/excel.js';
 import { parseMessage, mergeItems } from '../src/lib/parser.js';
 import { mergeConfig } from '../src/lib/store.js';
-import { repairGroupKey, deviceGroupKey } from '../src/lib/pricing.js';
+import { repairGroupKey } from '../src/lib/pricing.js';
+import { CATALOG_ID } from '../src/lib/devices.js';
 
 const T0 = 1795000000000; // זמן הייצוא
 const NOW = T0 + 86400000; // זמן הייבוא
@@ -17,14 +18,25 @@ const cfg0 = () => mergeConfig({
     { id: 'pa', name: 'חלקים א', type: 'parts', phone: '' },
     { id: 'pb', name: 'חלקים ב', type: 'parts', phone: '' },
     { id: 'dv', name: 'מכשירים', type: 'devices', phone: '' },
+    { id: 'dw', name: 'מכשירים ב', type: 'devices', phone: '' },
   ],
 });
 const parts = (t) => mergeItems([], parseMessage(t, { kind: 'parts', partType: 'screen' }), { now: OLD });
-const devices = (t) => mergeItems([], parseMessage(t, { kind: 'devices' }), { now: OLD });
+const ROWS = [
+  { id: 'd1', brand: 'Apple', segment: 'flagship', series: 'iPhone 15', model: 'iPhone 15', storage: 128, version: '', year: 2023, notes: '' },
+  { id: 'd2', brand: 'Apple', segment: 'premium', series: 'iPhone 15', model: 'iPhone 15 Pro', storage: 256, version: '', year: 2023, notes: '' },
+  { id: 'd3', brand: 'Samsung', segment: 'flagship', series: 'Galaxy S', model: 'Galaxy S24', storage: 128, version: '', year: 2024, notes: '' },
+  { id: 'd4', brand: 'Samsung', segment: 'mid', series: 'Galaxy A', model: 'Galaxy A54 5G', storage: 128, version: '', year: 2023, notes: '' },
+  { id: 'd5', brand: 'Xiaomi', segment: 'mid', series: 'Redmi Note', model: 'Redmi Note 13 Pro', storage: 256, version: '', year: 2024, notes: '' },
+  { id: 'd6', brand: 'Nothing', segment: 'flagship', series: 'Phone', model: 'Phone (3)', storage: 256, version: '', year: 2025, notes: 'נוסף ידנית' },
+];
+const dp = (row, price) => ({ key: row, row, kind: 'device', price, raw: '', updatedAt: OLD, changedAt: OLD, prevPrice: null });
 const lists0 = () => ({
   pa: { updatedAt: OLD, items: parts('Galaxy A54 מקורי ₪200\nGalaxy A54 תחליפי ₪120\niPhone 13 סוללה מקורית ₪150\nGalaxy A34 סאני מקורי ₪180') },
   pb: { updatedAt: OLD, items: parts('Galaxy A54 מקורי ₪210') },
-  dv: { updatedAt: OLD, items: devices('iPhone 15 Pro 256 ₪4000\nGalaxy S24 128 ₪2500') },
+  dv: { updatedAt: OLD, items: [dp('d2', 4000), dp('d3', 2500)] },
+  dw: { updatedAt: OLD, items: [dp('d3', 2450)] },
+  [CATALOG_ID]: { updatedAt: OLD, items: ROWS.map((r) => ({ ...r })) },
 });
 
 // ---- עזרים לעריכת הקובץ כמו שמשתמש עושה באקסל ----
@@ -34,10 +46,10 @@ async function exported(lists, cfg) {
   await w.xlsx.load(await wb.xlsx.writeBuffer());
   return w;
 }
-async function reread(wb) {
+async function reread(wb, cfg = cfg0()) {
   const w = new ExcelJS.Workbook();
   await w.xlsx.load(await wb.xlsx.writeBuffer());
-  return readWorkbook(w);
+  return readWorkbook(w, cfg);
 }
 const sheet = (wb, name) => wb.getWorksheet(name);
 const col = (ws, header) => { let n = 0; ws.getRow(1).eachCell((c, i) => { if (c.value === header) n = i; }); assert.ok(n, `אין עמודה ${header}`); return n; };
@@ -55,7 +67,9 @@ function addRow(ws, values) {
   const row = ws.addRow([]);
   for (const [h, v] of Object.entries(values)) row.getCell(col(ws, h)).value = v;
 }
-const plan = async (wb, lists = lists0(), cfg = cfg0()) => planImport(await reread(wb), lists, cfg, NOW);
+const plan = async (wb, lists = lists0(), cfg = cfg0()) => planImport(await reread(wb, cfg), lists, cfg, NOW);
+const price = (p, sid, row) => p.lists[sid]?.items.find((x) => x.row === row)?.price ?? null;
+const catRow = (p, model) => p.lists[CATALOG_ID]?.items.find((x) => x.model === model);
 const find = (items, model, variant) => items.find((x) => x.model === model && (variant == null || x.variant === variant));
 
 // קובץ שנשמר בתוכנה אחרת (כמו openpyxl) עם הערה בתא: ההערות נשמרות בנתיב שאקסל לא משתמש בו
@@ -84,31 +98,36 @@ test('אקסל: קובץ עם הערות שנשמר בתוכנה אחרת נקר
   hardenExcelJS(ExcelJS); // פעמיים – בלי לעטוף שוב
   const w = new ExcelJS.Workbook();
   await w.xlsx.load(buf);
-  const p = planImport(readWorkbook(w), lists, cfg, NOW);
+  const p = planImport(readWorkbook(w, cfg), lists, cfg, NOW);
   assert.equal(p.summary.updated, 1);
   assert.equal(find(p.lists.pa.items, 'iPhone 13').price, 140);
   assert.deepEqual(p.details.updated[0].what, ['מחיר']);
 });
 
-test('אקסל: ייצוא ושני גיליונות, וייבוא בלי שינוי לא משנה כלום', async () => {
+test('אקסל: ייצוא – גיליון תיקונים + גיליון לכל חברה, וייבוא בלי שינוי לא משנה כלום', async () => {
   const lists = lists0(), cfg = cfg0();
   const wb = await exported(lists, cfg);
-  assert.deepEqual(wb.worksheets.map((w) => w.name), [SHEET_REPAIRS, SHEET_DEVICES, '_ייצוא']);
+  assert.deepEqual(wb.worksheets.map((w) => w.name), [SHEET_REPAIRS, 'Apple', 'Samsung', 'Xiaomi', 'אחרים', '_ייצוא']);
   assert.equal(wb.getWorksheet('_ייצוא').state, 'veryHidden');
   const rep = sheet(wb, SHEET_REPAIRS);
   assert.equal(rep.views[0].rightToLeft, true);
   assert.equal(rep.rowCount, 1 + 5);
-  assert.equal(sheet(wb, SHEET_DEVICES).rowCount, 1 + 2);
+  assert.deepEqual(['Apple', 'Samsung', 'Xiaomi', 'אחרים'].map((n) => sheet(wb, n).rowCount - 1), [2, 2, 1, 1]);
   // מחיר ללקוח = המחיר באפליקציה: החלק הזול מכל הספקים + עבודה (Galaxy A: מסך 120), מעוגל ל-10
   assert.equal(findRow(rep, { 'דגם': 'Galaxy A54', 'איכות': 'מקורי', 'ספק': 'חלקים ב' }).getCell(col(rep, 'מחיר ללקוח')).value, 320);
   assert.equal(findRow(rep, { 'דגם': 'iPhone 13' }).getCell(col(rep, 'סוג חלק')).value, 'סוללה');
-  const dev = sheet(wb, SHEET_DEVICES);
-  const s24 = findRow(dev, { 'דגם': 'Galaxy S24' });
-  assert.equal(s24.getCell(col(dev, 'נפח')).value, '128GB');
-  assert.equal(s24.getCell(col(dev, 'קטגוריית רווח')).value, 'אוטומטי');
-  assert.equal(s24.getCell(col(dev, 'מחיר ללקוח')).value, 2700); // Galaxy S = דגל: 2500 + 8%
+  const sam = sheet(wb, 'Samsung');
+  assert.deepEqual(sam.getRow(1).values.slice(1, 8), ['יצרן', 'רמות גימור/סגמנטציה', 'סדרה', 'שם הדגם', 'נפחי אחסון זמינים', 'גרסה', 'שנת השקה'], 'כמו בקובץ המכשירים');
+  const s24 = findRow(sam, { 'שם הדגם': 'Galaxy S24' });
+  assert.equal(s24.getCell(col(sam, 'נפחי אחסון זמינים')).value, '128GB');
+  assert.equal(s24.getCell(col(sam, 'רמות גימור/סגמנטציה')).value, 'מכשירי דגל');
+  assert.equal(s24.getCell(col(sam, 'מחיר ספק מכשירים')).value, 2500);
+  assert.equal(s24.getCell(col(sam, 'מחיר ספק מכשירים ב')).value, 2450);
+  assert.equal(s24.getCell(col(sam, 'מחיר ללקוח')).value, 2650); // הזול (2450) + 8% דגל = 2646 → 2650
+  assert.equal(findRow(sam, { 'שם הדגם': 'Galaxy A54 5G' }).getCell(col(sam, 'מחיר ללקוח')).value, null, 'אין מחיר מספק');
+  assert.equal(findRow(sheet(wb, 'אחרים'), { 'שם הדגם': 'Phone (3)' }).getCell(col(sam, 'הערות')).value, 'נוסף ידנית');
   const p = await plan(wb, lists, cfg);
-  assert.equal(p.hasChanges, false);
+  assert.equal(p.hasChanges, false, JSON.stringify(p.summary));
   assert.deepEqual(p.summary.invalid, []);
   assert.deepEqual(p.summary.notes, []);
 });
@@ -130,10 +149,20 @@ test('אקסל: שינוי מחיר ספק מעדכן רק את הפריט הז�
   assert.equal(p.lists.pa.items.length, 4);
   assert.equal(find(p.lists.pa.items, 'Galaxy A54', 'תחליפי'), find(lists.pa.items, 'Galaxy A54', 'תחליפי'), 'פריט שלא שונה – אותו אובייקט בדיוק');
   assert.equal(p.lists.pa.updatedAt, OLD, 'תאריך המחירון של הספק לא משתנה');
-  // מחיר כטקסט ("₪1,200") נקרא כמספר
-  setCell(sheet(wb, SHEET_DEVICES), { 'דגם': 'Galaxy S24' }, 'מחיר ספק', '₪2,450');
+  // מכשיר: מחיר כטקסט ("₪1,200") נקרא כמספר, ומתעדכן רק אצל הספק הזה – הרשימה עצמה לא משתנה
+  setCell(sheet(wb, 'Samsung'), { 'שם הדגם': 'Galaxy S24' }, 'מחיר ספק מכשירים', '₪2,400');
   const p2 = await plan(wb, lists);
-  assert.equal(find(p2.lists.dv.items, 'Galaxy S24').price, 2450);
+  assert.deepEqual(Object.keys(p2.lists).sort(), ['dv', 'pa']);
+  assert.equal(price(p2, 'dv', 'd3'), 2400);
+  assert.equal(p2.lists.dv.items.find((x) => x.row === 'd3').prevPrice, 2500);
+  assert.equal(price(p2, 'dv', 'd2'), 4000);
+  // מחיר שנמחק מהתא – אין יותר מחיר מהספק הזה; מחיר חדש לשורה שלא היה לה
+  setCell(sheet(wb, 'Samsung'), { 'שם הדגם': 'Galaxy S24' }, 'מחיר ספק מכשירים ב', null);
+  setCell(sheet(wb, 'Samsung'), { 'שם הדגם': 'Galaxy A54 5G' }, 'מחיר ספק מכשירים ב', 1000);
+  const p3 = await plan(wb, lists);
+  assert.equal(price(p3, 'dw', 'd3'), null);
+  assert.equal(price(p3, 'dw', 'd4'), 1000);
+  assert.equal(p3.summary.priceChanged, 1 + 1 + 2);
 });
 
 test('אקסל: שורה שנמחקה נמחקת, שורה חדשה נוספת (גם עם ספק חדש)', async () => {
@@ -165,13 +194,13 @@ test('אקסל: מחיר ללקוח – שינוי הופך למחיר ידני 
   const lists = lists0(), cfg = cfg0();
   const wb = await exported(lists, cfg);
   setCell(sheet(wb, SHEET_REPAIRS), { 'דגם': 'Galaxy A54', 'איכות': 'מקורי', 'ספק': 'חלקים א' }, 'מחיר ללקוח', 349);
-  setCell(sheet(wb, SHEET_DEVICES), { 'דגם': 'iPhone 15 Pro' }, 'מחיר ללקוח', 4390);
+  setCell(sheet(wb, 'Apple'), { 'שם הדגם': 'iPhone 15 Pro' }, 'מחיר ללקוח', 4390);
   const p = await plan(wb, lists, cfg);
   assert.equal(p.summary.overridesSet, 2);
   assert.equal(p.summary.updated, 0, 'הפריטים עצמם לא השתנו');
   assert.deepEqual(Object.keys(p.lists), []);
   const rk = repairGroupKey('samsung|galaxy a54', 'screen', 'מקורי');
-  const dk = deviceGroupKey(find(lists.dv.items, 'iPhone 15 Pro'));
+  const dk = 'row:d2';
   assert.equal(p.config.priceOverrides[rk], 349);
   assert.equal(p.config.priceOverrides[dk], 4390);
 
@@ -182,7 +211,7 @@ test('אקסל: מחיר ללקוח – שינוי הופך למחיר ידני 
   assert.equal(rows.repairs.find((r) => r.model === 'Galaxy A34').customer, 333);
   const wb2 = await exported(lists, cfg2);
   setCell(sheet(wb2, SHEET_REPAIRS), { 'דגם': 'Galaxy A34' }, 'מחיר ללקוח', null);
-  setCell(sheet(wb2, SHEET_DEVICES), { 'דגם': 'iPhone 15 Pro' }, 'מחיר ללקוח', null);
+  setCell(sheet(wb2, 'Apple'), { 'שם הדגם': 'iPhone 15 Pro' }, 'מחיר ללקוח', null);
   const p2 = await plan(wb2, lists, cfg2);
   assert.equal(p2.summary.overridesCleared, 2);
   assert.deepEqual(p2.config.priceOverrides, { [rk]: 349 });
@@ -210,46 +239,80 @@ test('אקסל: מיזוג – מחיר שהתעדכן מוואטסאפ אחרי
   assert.equal(p.summary.overridesSet, 0, 'מחיר ללקוח שלא נגעו בו לא הופך לידני');
 });
 
-test('אקסל: שורה מועתקת עם שינוי נוספת כפריט חדש, והמקורית נשארת', async () => {
+test('אקסל: שורה מועתקת עם שינוי נוספת כשורה חדשה ברשימה, והמקורית נשארת', async () => {
   const lists = lists0(), cfg = cfg0();
   const wb = await exported(lists, cfg);
-  const dev = sheet(wb, SHEET_DEVICES);
-  const src = findRow(dev, { 'דגם': 'iPhone 15 Pro' });
-  dev.addRow(src.values);
-  const copy = dev.getRow(dev.rowCount);
-  copy.getCell(col(dev, 'נפח')).value = '512GB';
-  copy.getCell(col(dev, 'מחיר ספק')).value = 4700;
+  const ap = sheet(wb, 'Apple');
+  const src = findRow(ap, { 'שם הדגם': 'iPhone 15 Pro' });
+  ap.addRow(src.values);
+  const copy = ap.getRow(ap.rowCount);
+  copy.getCell(col(ap, 'נפחי אחסון זמינים')).value = '512GB';
+  copy.getCell(col(ap, 'מחיר ספק מכשירים')).value = 4700;
   const p = await plan(wb, lists, cfg);
   assert.equal(p.summary.added, 1);
   assert.equal(p.summary.updated, 0);
-  assert.equal(p.lists.dv.items.length, 3);
-  assert.equal(p.lists.dv.items.find((x) => x.storage === 256).price, 4000);
-  assert.equal(p.lists.dv.items.find((x) => x.storage === 512).price, 4700);
+  const cat = p.lists[CATALOG_ID].items;
+  assert.equal(cat.length, ROWS.length + 1);
+  const added = cat.find((x) => x.model === 'iPhone 15 Pro' && x.storage === 512);
+  assert.equal(added.segment, 'premium');
+  assert.equal(price(p, 'dv', 'd2'), 4000);
+  assert.equal(price(p, 'dv', added.id), 4700);
   // שורה כפולה בלי שום שינוי – מדולגת
   const wb2 = await exported(lists, cfg);
-  sheet(wb2, SHEET_DEVICES).addRow(findRow(sheet(wb2, SHEET_DEVICES), { 'דגם': 'Galaxy S24' }).values);
+  sheet(wb2, 'Samsung').addRow(findRow(sheet(wb2, 'Samsung'), { 'שם הדגם': 'Galaxy S24' }).values);
   const p2 = await plan(wb2, lists, cfg);
   assert.equal(p2.hasChanges, false);
   assert.equal(p2.summary.notes.length, 1);
 });
 
-test('אקסל: עריכת מכשיר – נפח, וריאנט וקטגוריית רווח', async () => {
+test('אקסל: עריכת מכשיר – נפח, גרסה, רמת גימור והעברה לחברה אחרת; המחירים נשארים לשורה', async () => {
   const lists = lists0(), cfg = cfg0();
   const wb = await exported(lists, cfg);
-  const dev = sheet(wb, SHEET_DEVICES);
-  setCell(dev, { 'דגם': 'Galaxy S24' }, 'נפח', '256GB');
-  setCell(dev, { 'דגם': 'Galaxy S24' }, 'וריאנט', 'DCS');
-  setCell(dev, { 'דגם': 'iPhone 15 Pro' }, 'קטגוריית רווח', 'ביניים');
+  const sam = sheet(wb, 'Samsung');
+  setCell(sam, { 'שם הדגם': 'Galaxy S24' }, 'נפחי אחסון זמינים', '256GB');
+  setCell(sam, { 'שם הדגם': 'Galaxy S24' }, 'גרסה', 'DCS');
+  setCell(sam, { 'שם הדגם': 'Galaxy A54 5G' }, 'רמות גימור/סגמנטציה', 'מכשירי כניסה');
+  setCell(sheet(wb, 'אחרים'), { 'שם הדגם': 'Phone (3)' }, 'יצרן', 'Xiaomi');
   const p = await plan(wb, lists, cfg);
-  assert.equal(p.summary.updated, 2);
+  assert.equal(p.summary.updated, 3);
   assert.equal(p.summary.priceChanged, 0);
-  const s24 = find(p.lists.dv.items, 'Galaxy S24');
-  assert.equal(s24.storage, 256);
-  assert.equal(s24.variant, 'DCS');
-  assert.equal(s24.key, 'samsung|galaxy s24|256|DCS');
-  assert.equal(s24.price, 2500);
-  assert.equal(s24.updatedAt, OLD, 'בלי שינוי מחיר – תאריך המחיר לא משתנה');
-  assert.equal(find(p.lists.dv.items, 'iPhone 15 Pro').categoryOverride, 'mid');
+  assert.deepEqual(Object.keys(p.lists), [CATALOG_ID], 'רק הרשימה משתנה');
+  const s24 = catRow(p, 'Galaxy S24');
+  assert.deepEqual([s24.id, s24.storage, s24.version], ['d3', 256, 'DCS']);
+  assert.equal(catRow(p, 'Galaxy A54 5G').segment, 'entry');
+  assert.equal(catRow(p, 'Phone (3)').brand, 'Xiaomi');
+  // שינוי שיוצר שורה כפולה – לא מתקבל
+  const wb2 = await exported(lists, cfg);
+  setCell(sheet(wb2, 'Apple'), { 'שם הדגם': 'iPhone 15' }, 'שם הדגם', 'iPhone 15 Pro');
+  setCell(sheet(wb2, 'Apple'), { 'שם הדגם': 'iPhone 15 Pro', 'נפחי אחסון זמינים': '128GB' }, 'נפחי אחסון זמינים', '256GB');
+  const p2 = await plan(wb2, lists, cfg);
+  assert.match(p2.summary.invalid.map((x) => x.reason).join(), /כבר קיימת שורה כזו/);
+});
+
+test('אקסל: שורה חדשה בגיליון החברה נוספת לרשימה; בקובץ בלי מזהים שורה קיימת מתעדכנת ולא מוכפלת', async () => {
+  const lists = lists0(), cfg = cfg0();
+  const wb = await exported(lists, cfg);
+  addRow(sheet(wb, 'Xiaomi'), { 'יצרן': 'Xiaomi', 'רמות גימור/סגמנטציה': 'מכשירי פרימיום', 'סדרה': 'Xiaomi', 'שם הדגם': 'Xiaomi 15 Ultra', 'נפחי אחסון זמינים': '512GB', 'שנת השקה': 2025, 'מחיר ספק מכשירים ב': 4200 });
+  addRow(sheet(wb, 'אחרים'), { 'יצרן': 'Google', 'רמות גימור/סגמנטציה': 'מכשירי דגל', 'שם הדגם': 'Pixel 9', 'נפחי אחסון זמינים': '128GB' });
+  const p = await plan(wb, lists, cfg);
+  assert.equal(p.summary.added, 2);
+  const x15 = catRow(p, 'Xiaomi 15 Ultra');
+  assert.deepEqual([x15.segment, x15.storage, x15.year], ['premium', 512, 2025]);
+  assert.equal(price(p, 'dw', x15.id), 4200);
+  assert.equal(catRow(p, 'Pixel 9').brand, 'Google');
+
+  // קובץ בפורמט של רשימת המכשירים (בלי מזהים ובלי גיליון הייצוא)
+  const own = new ExcelJS.Workbook();
+  const ws = own.addWorksheet('Samsung');
+  ws.addRow(['יצרן', 'רמות גימור/סגמנטציה', 'סדרה', 'שם הדגם', 'נפחי אחסון זמינים', 'שנת השקה', 'מחיר ספק מכשירים', 'מחיר ספק R.P.Mobile', 'הערות']);
+  ws.addRow(['Samsung', 'מכשירי דגל', 'Galaxy S', 'Galaxy S24', '128GB', 2024, 2550, 2400, '']);
+  ws.addRow(['Samsung', 'מכשירי ביניים', 'Galaxy A', 'Galaxy A54 5G', '128GB', 2023, null, null, '']);
+  const p2 = planImport(await reread(own, cfg), lists, cfg, NOW);
+  assert.equal(p2.summary.added, 0);
+  assert.equal(p2.summary.deleted, 0);
+  assert.equal(price(p2, 'dv', 'd3'), 2550);
+  assert.match(p2.summary.notes.join(' '), /R\.P\.Mobile.*לא שייכת/);
+  assert.match(p2.summary.notes.join(' '), /"Apple" לא נמצא/);
 });
 
 test('אקסל: העברה לספק אחר, ושם ספק ששונה באפליקציה אחרי הייצוא לא נחשב כהעברה', async () => {
@@ -277,36 +340,50 @@ test('אקסל: שורות לא תקינות לא מיובאות והפריט ש
   setCell(rep, { 'דגם': 'iPhone 13' }, 'סוג חלק', 'מסגרת');
   addRow(rep, { 'ספק': 'מכשירים', 'דגם': 'Galaxy A15', 'סוג חלק': 'מסך', 'מחיר ספק': 90 });
   addRow(rep, { 'ספק': 'חלקים א', 'סוג חלק': 'מסך', 'מחיר ספק': 90 });
-  addRow(sheet(wb, SHEET_DEVICES), { 'ספק': 'מכשירים', 'דגם': 'Pixel 9', 'נפח': 'הרבה', 'מחיר ספק': 3000 });
+  const ap = sheet(wb, 'Apple');
+  addRow(ap, { 'יצרן': 'Google', 'רמות גימור/סגמנטציה': 'מכשירי דגל', 'שם הדגם': 'Pixel 9', 'נפחי אחסון זמינים': 'הרבה' });
+  addRow(ap, { 'יצרן': 'Apple', 'רמות גימור/סגמנטציה': 'יוקרה', 'שם הדגם': 'iPhone 18' });
+  setCell(ap, { 'שם הדגם': 'iPhone 15' }, 'מחיר ספק מכשירים', 'אלף');
   const p = await plan(wb, lists, cfg);
-  assert.equal(p.summary.invalid.length, 5);
-  assert.match(p.summary.invalid.map((x) => x.reason).join('|'), /מחיר ספק.*abc/);
-  assert.match(p.summary.invalid.map((x) => x.reason).join('|'), /מוגדר כספק מכשירים/);
+  assert.equal(p.summary.invalid.length, 7);
+  const reasons = p.summary.invalid.map((x) => x.reason).join('|');
+  assert.match(reasons, /מחיר ספק.*abc/);
+  assert.match(reasons, /מוגדר כספק מכשירים/);
+  assert.match(reasons, /נפח לא תקין/);
+  assert.match(reasons, /רמת גימור לא מוכרת: "יוקרה"/);
+  assert.match(reasons, /מחיר ספק מכשירים לא תקין/);
   assert.equal(p.summary.deleted, 0);
   assert.equal(p.summary.added, 0);
   assert.equal(p.hasChanges, false);
-  // פריט שהועבר לגיליון השני
+  // פריט תיקון שהועבר לגיליון מכשירים – לא מיובא ולא נמחק
   const wb2 = await exported(lists, cfg);
   const src = findRow(sheet(wb2, SHEET_REPAIRS), { 'דגם': 'iPhone 13' });
-  const vals = src.values;
+  const iid = src.getCell(col(sheet(wb2, SHEET_REPAIRS), 'מזהה')).value;
   sheet(wb2, SHEET_REPAIRS).spliceRows(src.number, 1);
-  const r = sheet(wb2, SHEET_DEVICES).addRow([]);
-  r.getCell(col(sheet(wb2, SHEET_DEVICES), 'ספק')).value = 'חלקים א';
-  r.getCell(col(sheet(wb2, SHEET_DEVICES), 'דגם')).value = 'iPhone 13';
-  r.getCell(col(sheet(wb2, SHEET_DEVICES), 'מחיר ספק')).value = 150;
-  r.getCell(col(sheet(wb2, SHEET_DEVICES), 'מזהה')).value = vals[col(sheet(wb2, SHEET_REPAIRS), 'מזהה')];
+  addRow(sheet(wb2, 'Apple'), { 'יצרן': 'Apple', 'רמות גימור/סגמנטציה': 'מכשירי דגל', 'שם הדגם': 'iPhone 13', 'מזהה': iid });
   const p2 = await plan(wb2, lists, cfg);
   assert.equal(p2.summary.invalid.length, 1);
+  assert.match(p2.summary.invalid[0].reason, /שורה של תיקון/);
   assert.equal(p2.summary.deleted, 0);
+  assert.equal(p2.hasChanges, false);
 });
 
-test('אקסל: גיליון חסר לא מוחק כלום, וקובץ שלא יוצא מהאפליקציה מוחק את מה שלא בו (עם אזהרה)', async () => {
+test('אקסל: גיליון חסר לא מוחק כלום, מחיקת שורה מוחקת אותה מהרשימה, וקובץ שלא יוצא מהאפליקציה מוחק את מה שלא בו (עם אזהרה)', async () => {
   const lists = lists0(), cfg = cfg0();
   const wb = await exported(lists, cfg);
-  wb.removeWorksheet(sheet(wb, SHEET_DEVICES).id);
+  wb.removeWorksheet(sheet(wb, 'Samsung').id);
   const p = await plan(wb, lists, cfg);
   assert.equal(p.hasChanges, false);
-  assert.match(p.summary.notes.join(' '), /מחירון מכשירים.*לא נמצא/);
+  assert.match(p.summary.notes.join(' '), /"Samsung" לא נמצא/);
+  // מחיקת שורת מכשיר: נמחקת מהרשימה ומהמחירונים של הספקים
+  const sam = sheet(wb, 'Apple');
+  sam.spliceRows(findRow(sam, { 'שם הדגם': 'iPhone 15 Pro' }).number, 1);
+  const pd = await plan(wb, lists, cfg);
+  assert.equal(pd.summary.deleted, 1);
+  assert.equal(catRow(pd, 'iPhone 15 Pro'), undefined);
+  assert.equal(pd.lists[CATALOG_ID].items.length, ROWS.length - 1);
+  assert.equal(price(pd, 'dv', 'd2'), null);
+  assert.equal(price(pd, 'dv', 'd3'), 2500);
 
   const wb2 = await exported(lists, cfg);
   wb2.removeWorksheet(wb2.getWorksheet('_ייצוא').id);
@@ -334,11 +411,12 @@ test('אקסל: ייבוא חוזר של אותו קובץ לא משנה שוב 
   setCell(rep, a54, 'מחיר ללקוח', 349);
   rep.spliceRows(findRow(rep, { 'דגם': 'Galaxy A34' }).number, 1);
   addRow(rep, { 'ספק': 'חלקים א', 'דגם': 'Galaxy A55', 'סוג חלק': 'מסך', 'מחיר ספק': 230 });
-  setCell(sheet(wb, SHEET_DEVICES), { 'דגם': 'Galaxy S24' }, 'נפח', '256GB');
+  setCell(sheet(wb, 'Samsung'), { 'שם הדגם': 'Galaxy S24' }, 'נפחי אחסון זמינים', '256GB');
+  addRow(sheet(wb, 'אחרים'), { 'יצרן': 'Google', 'רמות גימור/סגמנטציה': 'מכשירי דגל', 'שם הדגם': 'Pixel 9', 'נפחי אחסון זמינים': '128GB', 'מחיר ספק מכשירים': 2900 });
   const book = await reread(wb);
   const p1 = planImport(book, lists, cfg, NOW);
   assert.equal(p1.summary.updated, 2);
-  assert.equal(p1.summary.added, 1);
+  assert.equal(p1.summary.added, 2);
   assert.equal(p1.summary.deleted, 1);
   assert.equal(p1.summary.overridesSet, 1);
   const p2 = planImport(book, applyPlan(lists, p1), p1.config, NOW + 1000);
@@ -356,27 +434,26 @@ test('אקסל: ייבוא חוזר של אותו קובץ לא משנה שוב 
 
 test('אקסל: עמודת "אחוז רווח" – ייצוא, קביעה, מחיקה, ותא בפורמט אחוזים', async () => {
   const lists = lists0();
-  const ip = find(lists.dv.items, 'iPhone 15 Pro'), s24 = find(lists.dv.items, 'Galaxy S24');
-  const cfg = { ...cfg0(), marginOverrides: { [deviceGroupKey(ip)]: 5 } };
+  const cfg = { ...cfg0(), marginOverrides: { 'row:d2': 5 } };
   const wb = await exported(lists, cfg);
-  const dev = sheet(wb, SHEET_DEVICES);
-  assert.equal(findRow(dev, { 'דגם': 'iPhone 15 Pro' }).getCell(col(dev, 'אחוז רווח')).value, 5);
-  assert.equal(findRow(dev, { 'דגם': 'iPhone 15 Pro' }).getCell(col(dev, 'מחיר ללקוח')).value, 4200); // 4000 + 5%
-  assert.equal(findRow(dev, { 'דגם': 'Galaxy S24' }).getCell(col(dev, 'אחוז רווח')).value, null);
-  assert.equal(col(sheet(wb, SHEET_REPAIRS), 'מחיר ספק') > 0 && !sheet(wb, SHEET_REPAIRS).getRow(1).values.includes('אחוז רווח'), true, 'רק בגיליון המכשירים');
+  const ap = sheet(wb, 'Apple'), sam = sheet(wb, 'Samsung');
+  assert.equal(findRow(ap, { 'שם הדגם': 'iPhone 15 Pro' }).getCell(col(ap, 'אחוז רווח')).value, 5);
+  assert.equal(findRow(ap, { 'שם הדגם': 'iPhone 15 Pro' }).getCell(col(ap, 'מחיר ללקוח')).value, 4200); // 4000 + 5%
+  assert.equal(findRow(sam, { 'שם הדגם': 'Galaxy S24' }).getCell(col(sam, 'אחוז רווח')).value, null);
+  assert.equal(!sheet(wb, SHEET_REPAIRS).getRow(1).values.includes('אחוז רווח'), true, 'רק בגיליונות המכשירים');
   const p0 = await plan(wb, lists, cfg);
   assert.equal(p0.hasChanges, false);
 
-  setCell(dev, { 'דגם': 'iPhone 15 Pro' }, 'אחוז רווח', null);
-  const cell = findRow(dev, { 'דגם': 'Galaxy S24' }).getCell(col(dev, 'אחוז רווח'));
+  setCell(ap, { 'שם הדגם': 'iPhone 15 Pro' }, 'אחוז רווח', null);
+  const cell = findRow(sam, { 'שם הדגם': 'Galaxy S24' }).getCell(col(sam, 'אחוז רווח'));
   cell.value = 0.12; cell.numFmt = '0%'; // הקלדה של "12%" באקסל
   const p = await plan(wb, lists, cfg);
   assert.equal(p.summary.marginsSet, 1);
   assert.equal(p.summary.marginsCleared, 1);
-  assert.deepEqual(p.config.marginOverrides, { [deviceGroupKey(s24)]: 12 });
+  assert.deepEqual(p.config.marginOverrides, { 'row:d3': 12 });
   assert.equal(p.summary.updated, 0);
 
-  setCell(dev, { 'דגם': 'Galaxy S24' }, 'אחוז רווח', 'הרבה');
+  setCell(sam, { 'שם הדגם': 'Galaxy S24' }, 'אחוז רווח', 'הרבה');
   const p2 = await plan(wb, lists, cfg);
   assert.match(p2.summary.invalid.map((x) => x.reason).join(), /אחוז רווח לא תקין/);
 });
