@@ -1,8 +1,21 @@
 // קטלוג "מחירים סופיים בלבד" לעובדים: בלי מחירי ספק, בלי שמות ספקים ובלי אחוזי רווח
 import { buildCatalog, activeLists } from './catalog.js';
-import { repairQuote, deviceQuotes, laborFor, roundPrice } from './pricing.js';
+import { repairQuote, laborFor, roundPrice } from './pricing.js';
 import { REPAIRS } from './defaults.js';
 import { searchTokens } from './normalize.js';
+import { CATALOG_ID, defaultCatalog, priceIndex, rowQuote, buildDeviceModels, sheetOf } from './devices.js';
+
+/** רשימת המכשירים השמורה (או ההתחלתית, אם עדיין לא נשמרה) */
+export const catalogRows = (lists) => lists?.[CATALOG_ID]?.items || defaultCatalog();
+
+/** קטלוג מלא (מנהל / עובד עם פירוט): תיקונים מספקי החלקים + רשימת המכשירים עם מחירי הספקים */
+export function buildFullCatalog(allLists, cfg) {
+  const lists = activeLists(allLists, cfg);
+  const rows = catalogRows(allLists);
+  const cat = buildCatalog(lists, rows);
+  const prices = priceIndex(lists, cfg);
+  return { ...cat, lite: false, rows, prices, devModels: buildDeviceModels(rows, prices) };
+}
 
 /** הגדרות שמותר לעובדים לראות (טבלת העבודה היא מחירון הטכנאי עצמו) */
 export function publicConfig(cfg) {
@@ -18,7 +31,7 @@ export function publicConfig(cfg) {
 
 export function buildPublicCatalog(allLists, cfg) {
   const lists = activeLists(allLists, cfg);
-  const cat = buildCatalog(lists);
+  const cat = buildFullCatalog(allLists, cfg);
   const models = cat.models.map((m) => {
     const r = {};
     for (const rep of REPAIRS) {
@@ -27,23 +40,33 @@ export function buildPublicCatalog(allLists, cfg) {
       if (o.length) r[rep.id] = { o };
       else if (q.laborOnly != null) r[rep.id] = { o: [], l: q.laborOnly };
     }
-    const d = m.hasDevices
-      ? deviceQuotes(m, cat.deviceIndex.get(m.mkey) || [], cfg).filter((x) => x.final != null)
-        .map((x) => ({ n: x.item.name, v: x.item.variant || '', s: x.item.storage || null, f: x.final, u: x.item.updatedAt || null }))
-      : [];
-    return { k: m.mkey, b: m.brand || null, m: m.model, fa: m.family || null, t: m.tier || null, dk: m.devKind || null, hp: m.hasParts, hd: d.length > 0, r, d };
-  });
+    return { k: m.mkey, b: m.brand || null, m: m.model, fa: m.family || null, t: m.tier || null, dk: m.devKind || null, hp: m.hasParts, r };
+  }).filter((m) => m.hp || Object.keys(m.r).length); // דגם מהרשימה שאין לו אף מחיר תיקון – לא נשלח
+  // מכשירים למכירה: רק מחיר סופי לכל נפח / גרסה
+  const devices = cat.devModels.map((g) => {
+    const d = g.rows.map((row) => rowQuote(row, cat.prices.get(row.id), cfg)).filter((q) => q.final != null)
+      .map((q) => ({ s: q.row.storage || null, v: q.row.version || '', sg: q.row.segment, f: q.final, u: q.best?.updatedAt || null }));
+    return d.length ? { b: g.brand, m: g.model, se: g.series || '', sg: g.segment, y: g.year ?? null, d } : null;
+  }).filter(Boolean);
   const updatedAt = Math.max(0, ...Object.values(lists || {}).map((l) => l.updatedAt || 0));
-  return { v: 1, updatedAt, models };
+  return { v: 2, updatedAt, models, devices };
 }
 
 /** הופך את הקטלוג המפורסם למבנה שהממשק והחיפוש מכירים */
 export function liteCatalog(pub) {
   const models = (pub?.models || []).map((x) => ({
     mkey: x.k, brand: x.b, model: x.m, family: x.fa, tier: x.t, devKind: x.dk,
-    hasParts: x.hp, hasDevices: x.hd, tokens: searchTokens(`${x.b || ''} ${x.m}`), r: x.r || {}, d: x.d || [],
+    hasParts: x.hp, tokens: searchTokens(`${x.b || ''} ${x.m}`), r: x.r || {},
   }));
-  return { lite: true, models, devices: [], parts: [], updatedAt: pub?.updatedAt || 0 };
+  const devModels = (pub?.devices || []).map((x) => {
+    const key = `${String(x.b || '').toLowerCase()}|${String(x.m).toLowerCase()}`;
+    return {
+      key, mkey: key, brand: x.b, sheet: sheetOf(x.b), model: x.m, series: x.se, segment: x.sg, year: x.y,
+      segments: [...new Set(x.d.map((r) => r.sg || x.sg))], tokens: searchTokens(`${x.b || ''} ${x.m} ${x.se || ''}`),
+      hasDevices: true, priced: true, lite: x.d,
+    };
+  });
+  return { lite: true, models, devModels, parts: [], updatedAt: pub?.updatedAt || 0 };
 }
 
 export function liteRepairQuote(model, repair, pcfg, addonIds = []) {
@@ -63,8 +86,8 @@ export function liteRepairQuote(model, repair, pcfg, addonIds = []) {
 }
 
 export function liteDeviceQuotes(model) {
-  return (model.d || []).map((x) => ({
-    item: { name: x.n, variant: x.v, storage: x.s, updatedAt: x.u }, final: x.f, suppliers: [], margin: 1, overridden: false,
+  return (model.lite || []).map((x) => ({
+    row: { id: null, brand: model.brand, model: model.model, storage: x.s, version: x.v, segment: x.sg }, final: x.f, best: { updatedAt: x.u }, suppliers: [], overridden: false,
   }));
 }
 
@@ -74,10 +97,10 @@ export function getRepairQuote(model, repair, catalog, cfg, addonIds = []) {
   const parts = catalog.partIndex ? catalog.partIndex.get(`${model.mkey}|${repair}`) || [] : catalog.parts;
   return repairQuote(model, repair, parts, cfg, addonIds);
 }
+/** מחיר ללקוח לכל שורה (נפח / גרסה) של דגם ברשימת המכשירים */
 export function getDeviceQuotes(model, catalog, cfg) {
   if (catalog.lite) return liteDeviceQuotes(model);
-  const devices = catalog.deviceIndex ? catalog.deviceIndex.get(model.mkey) || [] : catalog.devices;
-  return deviceQuotes(model, devices, cfg);
+  return (model.rows || []).map((row) => rowQuote(row, catalog.prices?.get(row.id), cfg));
 }
 
 // חתימה פשוטה לזיהוי שינוי (כדי לא לכתוב לשרת בלי צורך)

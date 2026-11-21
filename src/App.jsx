@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { buildCatalog, activeLists, searchModels } from './lib/catalog.js';
+import { searchModels } from './lib/catalog.js';
 import { freshness } from './lib/pricing.js';
-import { liteCatalog, getRepairQuote, getDeviceQuotes } from './lib/publish.js';
+import { buildFullCatalog, liteCatalog, getRepairQuote, getDeviceQuotes } from './lib/publish.js';
+import { SEGMENTS, SHEETS, CATALOG_ID, defaultCatalog, migrateDeviceConfig, sortDeviceModels } from './lib/devices.js';
+import { fmtStorage } from './lib/normalize.js';
 import { REPAIRS } from './lib/defaults.js';
 import { fmt, Fresh, Icon, daysLabel } from './ui/util.jsx';
 import ModelSheet from './ui/ModelSheet.jsx';
@@ -12,13 +14,10 @@ import { useBack, useExitGuard } from './ui/useBack.js';
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* */ } };
 
-const DEVICE_CATS = [
-  { id: 'phone', label: 'טלפונים', kinds: ['phone'] },
-  { id: 'tablet', label: 'טאבלטים', kinds: ['tablet'] },
-  { id: 'wear', label: 'שעונים ואוזניות', kinds: ['watch', 'audio'] },
-  { id: 'acc', label: 'אביזרים', kinds: ['accessory', 'other'] },
-];
-const BRANDS = ['Apple', 'Samsung', 'Xiaomi'];
+// מכשירים: סינון לפי חברה (הגיליונות של הרשימה) ולפי סגמנט
+const DEVICE_SEGMENTS = SEGMENTS.map((s) => ({ id: s.id, label: s.label.replace('מכשירי ', '') }));
+const REPAIR_BRANDS = ['Apple', 'Samsung', 'Xiaomi'].map((b) => ({ id: b, label: b }));
+const DEVICE_BRANDS = SHEETS.map((s) => ({ id: s.id, label: s.label }));
 const EMPTY = { query: '', brand: null, pill: null };
 const BIG_STORAGE = /(^|\s)(64|128|256|512|1024)\s*(gb|g|גיגה)?(?=\s|$)|(^|\s)([12])\s*(tb|טרה)(?=\s|$)/i;
 
@@ -73,7 +72,7 @@ export default function App({ store }) {
 
   const full = !!data.full;
   const cfg = full ? data.config : data.pcfg;
-  const catalog = useMemo(() => (full ? buildCatalog(activeLists(data.lists, data.config)) : liteCatalog(data.pub)), [full, data.lists, data.config, data.pub]);
+  const catalog = useMemo(() => (full ? buildFullCatalog(data.lists, data.config) : liteCatalog(data.pub)), [full, data.lists, data.config, data.pub]);
   const isAdmin = auth.role === 'admin';
   const seeCost = full; // מנהל, או עובד שקיבל הרשאת פירוט
   const showCustomer = customer || !seeCost;
@@ -83,6 +82,12 @@ export default function App({ store }) {
     if (!isAdmin || !full || !data.ready) return;
     const t = setTimeout(() => { store.publish(data.lists, data.config).then(() => setPubError(null), (e) => setPubError(e?.message || String(e))); }, 1200);
     return () => clearTimeout(t);
+  }, [isAdmin, full, data.ready, data.lists, data.config, store]);
+  // מנהל, פעם ראשונה: שומר את רשימת המכשירים ההתחלתית ומעביר מחירים ידניים / אחוזי רווח של מכשירים לשורות שלה
+  useEffect(() => {
+    if (!isAdmin || !full || !data.ready || data.lists?.[CATALOG_ID]) return;
+    const rows = defaultCatalog();
+    store.initCatalog?.(rows, migrateDeviceConfig(data.config, rows, REPAIRS.map((r) => r.id))).catch(() => {});
   }, [isAdmin, full, data.ready, data.lists, data.config, store]);
   // מנהל: בקשות פירוט פתוחות
   useEffect(() => (isAdmin && store.onRequests ? store.onRequests(setRequests) : undefined), [isAdmin, store]);
@@ -111,11 +116,11 @@ export default function App({ store }) {
       return { ...r, models: r.models.filter(has) };
     }
     const q = storageQ ? query.replace(BIG_STORAGE, ' ') : query;
-    const r = searchModels(q, catalog, { brand, kindFilter: 'devices' });
-    let models = r.models.filter((m) => m.hasDevices && !m.synthetic);
-    if (pill) models = models.filter((m) => DEVICE_CATS.find((c) => c.id === pill)?.kinds.includes(m.devKind || 'other'));
-    if (storageQ) models = models.filter((m) => getDeviceQuotes(m, catalog, cfg).some((d) => d.item.storage === storageQ));
-    return { repair: null, models };
+    const r = searchModels(q, { models: catalog.devModels || [] }, { kindFilter: 'devices' });
+    let models = r.models.filter((m) => (!brand || m.sheet === brand) && (!pill || m.segments.includes(pill)));
+    // רק דגמים שיש להם מחיר ללקוח (ואם חיפשו נפח – בנפח הזה)
+    models = models.filter((m) => getDeviceQuotes(m, catalog, cfg).some((d) => d.final != null && (!storageQ || d.row.storage === storageQ)));
+    return { repair: null, models: q.trim() ? models : sortDeviceModels(models) };
   }, [mode, query, brand, pill, storageQ, catalog, cfg]);
 
   if (data.error && !data.ready && auth.role !== 'none') return <ErrorScreen code={data.error} store={store} />;
@@ -124,7 +129,8 @@ export default function App({ store }) {
 
   const supType = mode === 'repairs' ? 'parts' : 'devices';
   const supplierStatus = (full ? cfg.suppliers || [] : []).filter((s) => (s.type || 'devices') === supType)
-    .map((s) => ({ s, doc: data.lists[s.id], f: freshness(data.lists[s.id]?.updatedAt, cfg) }));
+    .map((s) => ({ s, doc: data.lists[s.id], f: freshness(data.lists[s.id]?.updatedAt, cfg),
+      count: (data.lists[s.id]?.items || []).filter((x) => (supType === 'parts' ? x.kind === 'part' : !!x.row)).length }));
   const repairFor = results.repair;
   const idle = !query.trim() && !brand && !pill;
   const switchMode = (m) => { if (m !== mode) { setMode(m); setOpen(null); } };
@@ -149,9 +155,9 @@ export default function App({ store }) {
           {query && <button className="clear" onClick={() => { setF({ query: '' }); inputRef.current?.focus(); }}>✕</button>}
         </div>
         <div className="pills">
-          {BRANDS.map((b) => <button key={b} className={'pill' + (brand === b ? ' on' : '')} onClick={() => setF({ brand: brand === b ? null : b })}>{b}</button>)}
+          {(mode === 'repairs' ? REPAIR_BRANDS : DEVICE_BRANDS).map((b) => <button key={b.id} className={'pill' + (brand === b.id ? ' on' : '')} onClick={() => setF({ brand: brand === b.id ? null : b.id })}>{b.label}</button>)}
           <span className="pill-sep" />
-          {(mode === 'repairs' ? REPAIRS : DEVICE_CATS).map((r) => <button key={r.id} className={'pill' + (pill === r.id ? ' on' : '')} onClick={() => setF({ pill: pill === r.id ? null : r.id })}>{r.label}</button>)}
+          {(mode === 'repairs' ? REPAIRS : DEVICE_SEGMENTS).map((r) => <button key={r.id} className={'pill' + (pill === r.id ? ' on' : '')} onClick={() => setF({ pill: pill === r.id ? null : r.id })}>{r.label}</button>)}
         </div>
       </div>
 
@@ -181,11 +187,11 @@ export default function App({ store }) {
             <>
               <div className="section-title">{mode === 'repairs' ? 'ספקי חלקים' : 'ספקי מכשירים'}</div>
               <div className="card list">
-                {supplierStatus.map(({ s, doc, f: fr }) => (
+                {supplierStatus.map(({ s, doc, f: fr, count }) => (
                   <div key={s.id} className="row">
                     <span className={'dot ' + fr.level} />
                     <div className="main"><div className="t1" style={{ fontSize: 16 }}>{s.name}</div>
-                      <div className="t2">{doc ? `${doc.items?.length || 0} שורות · ${daysLabel(fr.days)}` : 'עדיין לא נטען מחירון'}</div></div>
+                      <div className="t2">{doc ? `${count} ${mode === 'repairs' ? 'שורות' : 'מכשירים עם מחיר'} · ${daysLabel(fr.days)}` : 'עדיין לא נטען מחירון'}</div></div>
                   </div>
                 ))}
               </div>
@@ -216,8 +222,8 @@ export default function App({ store }) {
       {open && <ModelSheet model={open} mode={mode} storage={storageQ} catalog={catalog} cfg={cfg} customer={showCustomer} isAdmin={isAdmin} onRequest={onRequest} initialRepair={mode === 'repairs' ? repairFor : null}
         onClose={() => setOpen(null)} onSaveConfig={store.saveConfig} toast={toast}
         onEditItem={isAdmin ? (fi) => { setFocusItem(fi); setPanel('settings'); } : null} />}
-      {panel === 'import' && <ImportSheet cfg={cfg} lists={data.lists} initialText={shareText} onClose={closeImport}
-        onSaveList={store.savePriceList} onSaveConfig={store.saveConfig} toast={toast} />}
+      {panel === 'import' && <ImportSheet cfg={cfg} lists={data.lists} catalog={catalog} initialText={shareText} onClose={closeImport}
+        onSaveList={store.savePriceList} onSaveConfig={store.saveConfig} onSaveImport={store.saveImport} toast={toast} />}
       {(panel === 'settings' || panel === 'users') && <SettingsSheet cfg={cfg} catalog={catalog} lists={data.lists} store={store} focus={focusItem} initialTab={panel === 'users' ? 'users' : null} requests={requests} onClose={closeSettings} onSaveConfig={store.saveConfig} toast={toast} />}
       {msg && <div className="toast">{msg}</div>}
       {store.mode === 'cloud' && !customer && (
@@ -248,10 +254,13 @@ function ResultRow({ m, mode, repair, storage, catalog, cfg, onOpen }) {
     }
   } else {
     let dq = getDeviceQuotes(m, catalog, cfg).filter((d) => d.final != null);
-    if (storage) dq = dq.filter((d) => d.item.storage === storage);
+    if (storage) dq = dq.filter((d) => d.row.storage === storage);
     const min = dq.length ? Math.min(...dq.map((d) => d.final)) : null;
     if (min != null) right = <span className="price num">{fmt(min)}</span>;
-    sub = dq.length > 1 ? `${dq.length} גרסאות · החל מ-${fmt(min)}` : dq.length === 1 ? [dq[0].item.storage ? dq[0].item.name.replace(m.model, '').trim() : '', dq[0].item.variant].filter(Boolean).join(' · ') : 'אין מחיר ללקוח';
+    // הנפחים עם המחיר ללקוח (בכמה גרסאות – הזול)
+    const byStorage = new Map();
+    for (const d of dq) { const k = d.row.storage || 0; if (!byStorage.has(k) || d.final < byStorage.get(k)) byStorage.set(k, d.final); }
+    sub = [...byStorage].sort((a, b) => a[0] - b[0]).map(([st, f]) => `${st ? fmtStorage(st) + ' ' : ''}${fmt(f)}`).join(' · ') || 'אין מחיר ללקוח';
   }
   return (
     <button className="row" onClick={onOpen}>

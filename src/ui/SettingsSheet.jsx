@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { REPAIRS, LABOR_GROUPS, CATEGORY_LABELS } from '../lib/defaults.js';
+import { REPAIRS, LABOR_GROUPS } from '../lib/defaults.js';
+import { SEGMENTS, rowLabel } from '../lib/devices.js';
 import { fmt, Icon } from './util.jsx';
 import ItemsManager from './ItemsManager.jsx';
 import { useBack } from './useBack.js';
@@ -68,10 +69,10 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
 
           {tab === 'margins' && (
             <div className="card" style={{ padding: 14 }}>
-              <div className="muted">רווח על מחיר הספק למכשירים למכירה: אחוז, ואפשר גם מינימום ומקסימום ברווח בשקלים (כולל מע"מ). שדה ריק = בלי הגבלה. בלי אחוז ועם מינימום = סכום קבוע. בלי אחוז ובלי סכום – לא מוצג מחיר ללקוח.</div>
-              {Object.keys(CATEGORY_LABELS).map((k) => (
+              <div className="muted">רווח על מחיר הספק לפי רמת הגימור / הסגמנט של המכשיר ברשימה: אחוז, ואפשר גם מינימום ומקסימום ברווח בשקלים (כולל מע"מ). שדה ריק = בלי הגבלה. בלי אחוז ועם מינימום = סכום קבוע. בלי אחוז ובלי סכום – לא מוצג מחיר ללקוח.</div>
+              {SEGMENTS.map(({ id: k, label }) => (
                 <div key={k} className="margin-row">
-                  <div className="lbl">{CATEGORY_LABELS[k]}</div>
+                  <div className="lbl">{label}</div>
                   <div className="margin-inputs">
                     <label>אחוז <input className="input sm num" inputMode="decimal" value={d.margins[k] ?? ''} onChange={(e) => set((y) => { y.margins[k] = numOrNull(e.target.value); })} /> %</label>
                     <label>מינימום <input className="input sm num" inputMode="numeric" value={d.marginMin?.[k] ?? ''} onChange={(e) => set((y) => { y.marginMin = { ...(y.marginMin || {}), [k]: numOrNull(e.target.value) }; })} /> ₪</label>
@@ -79,13 +80,13 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
                   </div>
                 </div>
               ))}
-              <div className="muted">דגל: כל האייפונים, Galaxy S, Galaxy Z, Note, אייפד, Galaxy Tab S ו-AirTag. ביניים: שאר הטלפונים והטאבלטים. אפשר לשנות קטגוריה לסדרה או לדגם בלשונית "חריגים". אחוז רווח לפריט מסוים קובעים במסך הדגם (פירוט פנימי) או בעמודה "אחוז רווח" באקסל, והוא מחליף את הכלל של הקטגוריה.</div>
+              <div className="muted">הסגמנט של כל מכשיר נקבע ברשימת המכשירים (הגדרות ← פריטים, או העמודה "רמות גימור/סגמנטציה" באקסל). אחוז רווח לפריט מסוים קובעים במסך הדגם (פירוט פנימי) או בעמודה "אחוז רווח" באקסל, והוא מחליף את הכלל של הסגמנט.</div>
               {Object.keys(d.marginOverrides || {}).length > 0 && (
                 <>
                   <div className="section-title">אחוזי רווח לפריטים ({Object.keys(d.marginOverrides).length})</div>
                   {Object.entries(d.marginOverrides).map(([k, v]) => (
                     <div key={k} className="sup-row" style={{ padding: '6px 0', borderTop: '1px solid var(--line)' }}>
-                      <span style={{ fontSize: 13 }}>{k.split('|').filter(Boolean).slice(1).join(' · ')}</span>
+                      <span style={{ fontSize: 13 }}>{keyLabel(k, catalog)}</span>
                       <span><span className="num">{v}%</span> <button className="btn danger" style={{ height: 28 }} onClick={() => set((y) => { delete y.marginOverrides[k]; })}>הסר</button></span>
                     </div>
                   ))}
@@ -148,7 +149,7 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
                   <div className="section-title">מחירים ידניים ({Object.keys(d.priceOverrides).length})</div>
                   {Object.entries(d.priceOverrides).map(([k, v]) => (
                     <div key={k} className="sup-row" style={{ padding: '6px 0', borderTop: '1px solid var(--line)' }}>
-                      <span style={{ fontSize: 13 }}>{k.split('|').filter(Boolean).slice(1).join(' · ')}</span>
+                      <span style={{ fontSize: 13 }}>{keyLabel(k, catalog)}</span>
                       <span><span className="num">{fmt(v)}</span> <button className="btn danger" style={{ height: 28 }} onClick={() => set((y) => { delete y.priceOverrides[k]; })}>הסר</button></span>
                     </div>
                   ))}
@@ -159,12 +160,19 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
           )}
 
           {tab === 'users' && <Users store={store} toast={toast} requests={requests} onClose={onClose} />}
-          {tab === 'items' && <ItemsManager cfg={d} lists={lists} store={store} toast={toast} focus={focus}
+          {tab === 'items' && <ItemsManager cfg={d} lists={lists} catalog={catalog} store={store} toast={toast} focus={focus}
             onConfigSaved={(c) => { dirty.current = false; setD(JSON.parse(JSON.stringify(c))); setStatus('saved'); }} />}
         </div>
       </div>
     </>
   );
+}
+
+// שם קריא למפתח של מחיר ידני / אחוז רווח: שורה ברשימת המכשירים או תיקון (דגם · תיקון · איכות)
+function keyLabel(k, catalog) {
+  if (k.startsWith('row:')) { const row = catalog?.rows?.find((r) => `row:${r.id}` === k); return row ? rowLabel(row) : 'מכשיר שנמחק מהרשימה'; }
+  const p = k.split('|');
+  return [p[1], REPAIRS.find((r) => r.id === p[2])?.label || p[2], p.slice(3).join(' ')].filter(Boolean).join(' · ');
 }
 
 function Rules({ d, set, catalog }) {
@@ -174,7 +182,7 @@ function Rules({ d, set, catalog }) {
   return (
     <>
       <div className="muted" style={{ margin: '8px 4px' }}>
-        חריג גובר על הטבלה: עלות עבודה אחרת, שיוך לעמודה, או קטגוריית רווח אחרת. <b>סדרה</b> = כל הדגמים שמתחילים בשם (למשל "iPhone 15" חל על 15, 15 Plus, 15 Pro…). <b>דגם</b> = רק הדגם המדויק. דגם קודם לסדרה.
+        חריג גובר על טבלת עלות העבודה: עלות עבודה אחרת או שיוך לעמודה. <b>סדרה</b> = כל הדגמים שמתחילים בשם (למשל "iPhone 15" חל על 15, 15 Plus, 15 Pro…). <b>דגם</b> = רק הדגם המדויק. דגם קודם לסדרה.
       </div>
       <div className="card list">
         {d.laborRules.length === 0 && <div className="empty">אין חריגים</div>}
@@ -185,7 +193,6 @@ function Rules({ d, set, catalog }) {
               <div className="t2">
                 {r.group ? `משויך ל: ${LABOR_GROUPS.find((g) => g.id === r.group)?.label}` : ''}
                 {Object.entries(r.labor || {}).filter(([, v]) => v != null && v !== '').map(([k, v]) => ` ${REPAIRS.find((x) => x.id === k)?.label} ${fmt(v)}`).join(' ·')}
-                {r.category ? ` · רווח: ${CATEGORY_LABELS[r.category]}` : ''}
                 {r.note ? ` · ${r.note}` : ''}
               </div>
             </div>
@@ -208,12 +215,6 @@ function Rules({ d, set, catalog }) {
             <select className="input" value={draft.group || ''} onChange={(e) => setDraft({ ...draft, group: e.target.value || undefined })}>
               <option value="">— ללא —</option>
               {LABOR_GROUPS.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
-            </select>
-          </label>
-          <label className="field"><span>קטגוריית רווח למכשירים למכירה (לא חובה)</span>
-            <select className="input" value={draft.category || ''} onChange={(e) => setDraft({ ...draft, category: e.target.value || undefined })}>
-              <option value="">— אוטומטי —</option>
-              {Object.entries(CATEGORY_LABELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
             </select>
           </label>
           <div className="muted">עלות עבודה ספציפית (ריק = לפי הטבלה):</div>

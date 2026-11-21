@@ -42,6 +42,7 @@ export function fakeFirebase() {
     },
     async addDoc(ref, data) { const id = 'id' + Math.random().toString(36).slice(2); return fs.setDoc({ path: `${ref.path}/${id}` }, data); },
     async deleteDoc(ref) { docs.delete(ref.path); queueMicrotask(emitAll); },
+    async getDocFromServer(ref) { return this.getDoc(ref); },
     writeBatch() {
       const ops = [];
       return {

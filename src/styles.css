@@ -196,3 +196,20 @@ textarea.input { min-height: 180px; resize: vertical; line-height: 1.5; }
 .margin-inputs label, .dev-admin label { display: flex; align-items: center; gap: 4px; }
 .margin-inputs .input.sm, .dev-admin .input.sm { width: 72px; }
 .dev-admin { width: 100%; margin-top: 8px; }
+
+/* עדכון מחירון מספק מכשירים: "לא ברשימה" */
+.rv { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.rv:last-child { border-bottom: 0; }
+.rv-head { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; font-size: 15px; }
+.rv-seg { margin: 8px 0 0; }
+.rv-seg button { flex: 1; }
+.rv-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; margin-top: 10px; }
+.rv-form label { display: grid; gap: 3px; font-size: 12px; color: var(--text2); }
+.rv-form .input.sm { width: 100%; }
+
+/* רשימת המכשירים בהגדרות */
+.dm-group { margin-top: 10px; }
+.dm-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; padding: 10px 14px 4px; font-size: 16px; }
+.dm-row .t2 { font-size: 12px; }
+.dev-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 10px; }
+@media (max-width: 380px) { .dev-form, .rv-form { grid-template-columns: minmax(0, 1fr); } }

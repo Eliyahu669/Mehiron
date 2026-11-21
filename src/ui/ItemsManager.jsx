@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { manualItem } from '../lib/parser.js';
-import { REPAIRS, CATEGORY_LABELS } from '../lib/defaults.js';
+import { REPAIRS } from '../lib/defaults.js';
+import DevicesManager from './DevicesManager.jsx';
 import { searchTokens } from '../lib/normalize.js';
 import { fmt, Icon, daysLabel } from './util.jsx';
 import { freshness } from '../lib/pricing.js';
@@ -13,9 +14,11 @@ const loadExcel = async () => { const m = await import('exceljs'); return harden
 const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 // ניהול ידני של פריטי המחירון – מנהל בלבד
-export default function ItemsManager({ cfg, lists, store, toast, focus, onConfigSaved }) {
-  const suppliers = cfg.suppliers || [];
-  const [supplierId, setSupplierId] = useState(focus?.supplierId || suppliers[0]?.id);
+const DEVICES = '__devices'; // "רשימת מכשירים" בין הספקים
+
+export default function ItemsManager({ cfg, lists, catalog, store, toast, focus, onConfigSaved }) {
+  const suppliers = (cfg.suppliers || []).filter((s) => s.type === 'parts'); // מחירי ספקי המכשירים נמצאים ברשימת המכשירים
+  const [supplierId, setSupplierId] = useState(focus?.row ? DEVICES : focus?.supplierId || suppliers[0]?.id || DEVICES);
   const supplier = suppliers.find((s) => s.id === supplierId);
   const kind = supplier?.type === 'parts' ? 'parts' : 'devices';
   const items = lists?.[supplierId]?.items || [];
@@ -78,7 +81,7 @@ export default function ItemsManager({ cfg, lists, store, toast, focus, onConfig
       const ExcelJS = await loadExcel();
       const wb = new ExcelJS.Workbook();
       await wb.xlsx.load(await file.arrayBuffer());
-      setXl({ book: readWorkbook(wb), fileName: file.name, at: Date.now() });
+      setXl({ book: readWorkbook(wb, cfg), fileName: file.name, at: Date.now() });
       setXlConfirm(false); setEdit(null); setSel(null); setBulk(null);
     } catch { toast('לא ניתן לקרוא את הקובץ – צריך קובץ אקסל בפורמט ‎.xlsx'); }
     finally { setXlBusy(''); }
@@ -183,10 +186,13 @@ export default function ItemsManager({ cfg, lists, store, toast, focus, onConfig
         </div>
       )}
       <div className="pills" style={{ paddingTop: 8 }}>
+        <button className={'pill' + (supplierId === DEVICES ? ' on' : '')} onClick={() => { setSupplierId(DEVICES); setEdit(null); setSel(null); setBulk(null); }}>רשימת מכשירים</button>
         {suppliers.map((s) => <button key={s.id} className={'pill' + (s.id === supplierId ? ' on' : '')} onClick={() => { setSupplierId(s.id); setEdit(null); setSel(null); setBulk(null); }}>{s.name}</button>)}
       </div>
 
-      {edit ? (
+      {supplierId === DEVICES ? (
+        <DevicesManager cfg={cfg} lists={lists} catalog={catalog} store={store} toast={toast} focusRow={focus?.row} onConfigSaved={onConfigSaved} />
+      ) : edit ? (
         <div className="card" style={{ padding: 14, marginTop: 8 }}>
           <div className="t1" style={{ fontWeight: 700, marginBottom: 4 }}>{edit.key != null ? 'עריכת פריט' : 'פריט חדש'} · {supplier?.name}</div>
           <label className="field"><span>שם הדגם / הפריט</span>
@@ -204,13 +210,6 @@ export default function ItemsManager({ cfg, lists, store, toast, focus, onConfig
             <input className="input" dir="auto" value={edit.variant} onChange={(e) => setEdit({ ...edit, variant: e.target.value })} /></label>
           <label className="field"><span>מחיר ספק (₪)</span>
             <input className="input num" inputMode="numeric" value={edit.price} onChange={(e) => setEdit({ ...edit, price: e.target.value.replace(/[^\d.]/g, '') })} /></label>
-          {kind === 'devices' && (
-            <label className="field"><span>קטגוריית רווח</span>
-              <select className="input" value={edit.categoryOverride || ''} onChange={(e) => setEdit({ ...edit, categoryOverride: e.target.value || undefined })}>
-                <option value="">אוטומטי</option>
-                {Object.entries(CATEGORY_LABELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-              </select></label>
-          )}
           {edit.raw && edit.raw !== 'ידני' && <div className="muted">מקור: {edit.raw}</div>}
           <div className="actions">
             <button className="btn primary" disabled={busy} onClick={onSave}>שמור</button>
@@ -295,11 +294,11 @@ function XlPreview({ plan, fileName, busy, confirm, onConfirm, onCancel }) {
       <div className="xl-sum">{plan.hasChanges ? 'אלה השינויים שיישמרו:' : 'לא נמצאו שינויים בקובץ.'}</div>
       <Sec title={many(s.updated, 'עודכן פריט אחד', 'עודכנו # פריטים')} hint={s.priceChanged ? `${s.priceChanged} במחיר ספק` : ''} rows={d.updated}
         render={(x) => <><div className="main">{x.name}<div className="sub">{[x.what.length ? `שונה: ${x.what.join(', ')}` : '', where(x)].filter(Boolean).join(' · ')}</div></div>
-          <span className="num">{x.before !== x.after ? `${fmt(x.before)} → ${fmt(x.after)}` : fmt(x.after)}</span></>} />
+          {x.after != null && <span className="num">{x.before !== x.after ? `${fmt(x.before)} → ${fmt(x.after)}` : fmt(x.after)}</span>}</>} />
       <Sec title={many(s.added, 'נוסף פריט אחד', 'נוספו # פריטים')} rows={d.added}
-        render={(x) => <><div className="main">{x.name}<div className="sub">{where(x)}</div></div><span className="num">{fmt(x.price)}</span></>} />
+        render={(x) => <><div className="main">{x.name}<div className="sub">{where(x)}</div></div>{x.price != null && <span className="num">{fmt(x.price)}</span>}</>} />
       <Sec cls="red" title={many(s.deleted, 'יימחק פריט אחד', 'יימחקו # פריטים')} hint="נמחקו מהקובץ" rows={d.deleted}
-        render={(x) => <><div className="main">{x.name}<div className="sub">{x.supplier}</div></div><span className="num">{fmt(x.price)}</span></>} />
+        render={(x) => <><div className="main">{x.name}<div className="sub">{x.supplier}</div></div>{x.price != null && <span className="num">{fmt(x.price)}</span>}</>} />
       <Sec title={`מחיר ידני ללקוח: ${s.overridesSet + s.overridesCleared}`} rows={d.overrides}
         render={(x) => <><div className="main">{x.name}</div><span className="num">{x.value == null ? 'אוטומטי' : fmt(x.value)}</span></>} />
       <Sec title={`אחוז רווח לפריט: ${s.marginsSet + s.marginsCleared}`} rows={d.margins}

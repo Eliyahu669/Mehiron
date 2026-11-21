@@ -47,11 +47,13 @@ export const DEFAULT_CONFIG = {
     { id: 'backup-s', label: 'גיבוי / העברת נתונים עד 30GB', amount: 100, manager: true },
     { id: 'backup-l', label: 'גיבוי / העברת נתונים מעל 30GB', amount: 150, manager: true },
   ],
-  margins: { flagship: 8, mid: 15, wearable: 25, accessory: 85, other: null },
-  // רווח מינימלי / מקסימלי בשקלים (כולל מע"מ) לכל קטגוריה. ריק = בלי הגבלה. אחוז ריק + מינימום = סכום קבוע
+  // אחוז רווח לפי סגמנט (רמות גימור) של רשימת המכשירים
+  margins: { entry: 15, mid: 15, flagship: 8, premium: 8, tablet: 8, wearable: 25, accessory: 85 },
+  // רווח מינימלי / מקסימלי בשקלים (כולל מע"מ) לכל סגמנט. ריק = בלי הגבלה. אחוז ריק + מינימום = סכום קבוע
   marginMin: {},
   marginMax: {},
-  marginOverrides: {}, // דגם|נפח|וריאנט → אחוז רווח לפריט (מחליף את הכלל של הקטגוריה)
+  marginOverrides: {}, // row:<מזהה שורה> → אחוז רווח לשורה (מחליף את הכלל של הסגמנט)
+  ignoredDevices: [], // פריטים מהודעות ספקים שבחרו "דלג תמיד": { key, label }
   vat: 18, // לחישוב "רווח אחרי מע"מ" בפירוט הפנימי
   rounding: { step: 10, mode: 'ceil' },
   adminPhone: '0502272669', // לכאן נשלחות בקשות פירוט מהעובדים
@@ -64,4 +66,3 @@ export const DEFAULT_CONFIG = {
   ],
 };
 
-export const CATEGORY_LABELS = { flagship: 'מכשירי דגל (כולל אייפד ו-AirTag)', mid: 'מכשירי ביניים וטאבלטים אחרים', wearable: 'אוזניות ושעונים (מותגים)', accessory: 'אביזרים (מגנים, כבלים, מטענים)', other: 'אחר (ממירים, רמקולים וכו׳)' };

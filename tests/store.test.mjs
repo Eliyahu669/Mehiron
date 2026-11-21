@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { createStore } from '../src/lib/store.js';
 import { fakeFirebase, tick } from './fake-firebase.mjs';
 import { parseMessage, mergeItems } from '../src/lib/parser.js';
+import { defaultCatalog, CATALOG_ID } from '../src/lib/devices.js';
 
 const CFG = { apiKey: 'x' };
 
@@ -66,7 +67,8 @@ test('עובד: רואה רק קטלוג סופי; המתג "פירוט פנימ
   assert.equal(emp.st.auth.role, 'viewer');
   assert.equal(emp.st.auth.showCost, false);
   assert.equal(emp.st.data.full, false);
-  assert.equal(emp.st.data.pub.models.length, 1);
+  assert.ok(emp.st.data.pub.models.some((m) => m.k === 'samsung|galaxy a54' && m.hp), 'הדגם עם החלק');
+  assert.ok(emp.st.data.pub.models.some((m) => m.k === 'apple|iphone 15' && !m.hp && m.r.battery.l), 'טלפון מרשימת המכשירים – מחיר עבודה בלבד');
   assert.equal(emp.st.data.lists, undefined, 'לעובד אין מחירי ספק');
 
   // בקשת פירוט ואישור
@@ -126,4 +128,30 @@ test('ייבוא מאקסל נשמר באצווה אחת (מחירונים + ה�
   assert.equal(data.lists.parts1.items.length, 1);
   assert.equal(data.lists.parts1.updatedAt, 7);
   assert.equal(data.config.priceOverrides['samsung|galaxy a54|screen|מקורי'], 349);
+});
+
+test('רשימת המכשירים נוצרת פעם אחת בלבד (גם בענן וגם במצב מקומי), יחד עם ההגדרות אחרי המעבר', async () => {
+  const fb = fakeFirebase();
+  const a = await session(fb);
+  fb.login({ uid: 'u1', email: 'owner@gmail.com' });
+  await tick(20);
+  const rows = defaultCatalog();
+  const cfg = { ...a.st.data.config, priceOverrides: { [`row:${rows[0].id}`]: 999 } };
+  assert.equal(await a.store.initCatalog(rows, cfg), true);
+  await tick(20);
+  assert.deepEqual(fb.writes.find((w) => w.batch).batch.sort(), ['app/config', `pricelists/${CATALOG_ID}`]);
+  assert.equal(a.st.data.lists[CATALOG_ID].items.length, rows.length);
+  assert.deepEqual(a.st.data.lists[CATALOG_ID].items[0], rows[0]);
+  assert.equal(a.st.data.config.priceOverrides[`row:${rows[0].id}`], 999);
+  // פעם שנייה (למשל ממכשיר אחר) – לא דורס רשימה שכבר נערכה
+  const n = fb.writes.length;
+  assert.equal(await a.store.initCatalog(rows.slice(0, 3), cfg), false);
+  assert.equal(fb.writes.length, n);
+
+  const local = await createStore({ seed: { lists: {} } });
+  let data = null;
+  local.onData((d) => { data = d; });
+  assert.equal(await local.initCatalog(rows, null), true);
+  assert.equal(await local.initCatalog(rows.slice(0, 3), null), false);
+  assert.equal(data.lists[CATALOG_ID].items.length, rows.length);
 });

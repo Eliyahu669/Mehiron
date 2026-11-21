@@ -175,6 +175,13 @@ export function identify(text, ctxBrand = null) {
 
 function parseIphone(tk, used, res) {
   res.brand = 'Apple'; res.kind = 'phone'; res.family = 'iphone'; res.category = 'flagship';
+  const duo = tk.indexOf('duo'); // האייפון המתקפל: "iPhone Duo" / "iPhone 18 Duo"
+  if (duo >= 0) {
+    used.add(duo);
+    tk.forEach((t, k) => { if (t === 'iphone' || t === 'ip' || (/^\d{1,2}$/.test(t) && Number(t) >= 17 && Number(t) <= 25)) used.add(k); });
+    res.model = 'iPhone Duo'; res.tier = 'new';
+    return;
+  }
   let idx = tk.findIndex((t) => /^(x|xr|xs|se|air|\d{1,2}e?)$/.test(t) && !(/^\d+$/.test(t) && (Number(t) < 4 || Number(t) > 25)));
   if (idx < 0) {
     const ii = tk.findIndex((t) => t === 'iphone' || t === 'ip');
@@ -235,20 +242,27 @@ function parseSamsung(tk, used, res) {
 function parseXiaomi(tk, used, res) {
   res.brand = 'Xiaomi'; res.kind = 'phone'; res.category = 'mid';
   let sub = tk.includes('redmi') ? 'redmi' : tk.includes('poco') ? 'poco' : 'xiaomi';
-  const si = tk.findIndex((t) => t === sub || (sub === 'xiaomi' && t === 'mi'));
+  let si = tk.findIndex((t) => t === sub || (sub === 'xiaomi' && t === 'mi'));
+  // "Xiaomi Mi 11" / "Mi 11 Ultra" – הדגם הוא Mi 11 (ולא Xiaomi בלי מספר)
+  const miNum = sub === 'xiaomi' ? tk.findIndex((t, k) => t === 'mi' && /^\d/.test(tk[k + 1] || '')) : -1;
+  if (miNum >= 0) si = miNum;
   if (si >= 0) used.add(si);
+  const xi = tk.indexOf('xiaomi'); if (xi >= 0) used.add(xi);
   const mi = tk.indexOf('mi'); if (mi >= 0) used.add(mi);
   const parts = [];
   for (let j = si + 1; j < tk.length && parts.length < 4; j++) {
     const t = tk[j];
     if (/^\d+$/.test(t) && STORAGE.has(Number(t))) break;
     if (TAGS.has(t)) break;
-    if (/^(note|pro|plus|ultra|lite|[a-z]?\d{1,2}[a-z]{0,2}|[a-z])$/.test(t) && !/^\d+g$/.test(t)) {
-      parts.push(t === 'note' || t === 'pro' || t === 'plus' || t === 'ultra' || t === 'lite' ? cap(t) : t.toUpperCase());
+    if (/^(note|pro|plus|ultra|lite|max|[a-z]?\d{1,2}[a-z]{0,2}|[a-z])$/.test(t) && !/^\d+g$/.test(t)) {
+      parts.push(['note', 'pro', 'plus', 'ultra', 'lite', 'max'].includes(t) ? cap(t) : t.toUpperCase());
       used.add(j);
     } else break;
   }
-  const name = sub === 'redmi' ? 'Redmi' : sub === 'poco' ? 'POCO' : (tk.includes('mi') && !tk.includes('xiaomi') ? 'Mi' : 'Xiaomi');
+  // מ-Xiaomi 11T ואילך המותג הוא Xiaomi ולא Mi (ספקים כותבים גם "Mi 13T")
+  const nm = miNum >= 0 ? String(tk[miNum + 1]).match(/^(\d+)(t?)$/) : null;
+  const xiaomiEra = nm && (Number(nm[1]) >= 12 || nm[2] === 't');
+  const name = sub === 'redmi' ? 'Redmi' : sub === 'poco' ? 'POCO' : (!xiaomiEra && (miNum >= 0 || (tk.includes('mi') && !tk.includes('xiaomi'))) ? 'Mi' : 'Xiaomi');
   res.model = [name, ...parts].join(' ');
   if (sub === 'redmi') res.family = 'redmi';
   else if (sub === 'poco') res.family = /^F\d/.test(parts[0] || '') ? 'xiaomi' : null;
