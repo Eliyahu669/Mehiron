@@ -1,5 +1,6 @@
 // פירוק הודעת מחירון של ספק (טקסט חופשי מוואטסאפ, או טבלה מ-PDF / גוגל שיטס) לשורות מובנות
 import { identify, modelKey, displayName, tokenize, fmtStorage } from './normalize.js';
+import { customRepairOf, resolveQuality } from './repairs.js';
 
 const STORAGE = new Set([16, 32, 64, 128, 256, 512, 1024]);
 const MODEL_WORDS = new Set(['iphone', 'ip', 'lp', 'galaxy', 'redmi', 'poco', 'airpods', 'airpod', 'ipad', 'watch', 'mibox',
@@ -76,7 +77,8 @@ function headerBrand(text) {
   return null;
 }
 
-const fixQuality = (s) => clean(s).replace(/מקןרי/g, 'מקורי').replace(/ללאר(?=\s|$)/g, 'ללא').replace(/מסגות/g, 'מסגרת').replace(/סני(?=\s|$)/g, 'סאני');
+const fixQuality = (s) => clean(s).replace(/מקןרי/g, 'מקורי').replace(/ללאר(?=\s|$)/g, 'ללא').replace(/מסגות/g, 'מסגרת').replace(/סני(?=\s|$)/g, 'סאני')
+  .replace(/([\u0590-\u05ff]{2,})(ללא|כולל)(?=\s|$)/g, '$1 $2');
 
 const NOTE_STORAGE = /(^|\s)(64|128|256|512)\s*(gb|g|גיגה|ג'יגה)?(?=\s|$)|(^|\s)([12])\s*(tb|t|טרה)(?=\s|$)/i;
 const HB = '(^|[^\u0590-\u05ff])[הולבמ]?';
@@ -90,9 +92,11 @@ const PART_WORDS = [
   ['back', new RegExp(`${HB}(גב|גבים|זכוכית אחורית)${HE}|\\b(back glass|back cover|backglass)\\b`, 'i')],
   ['housing', new RegExp(`${HB}(גוף|שלדה)${HE}|\\bhousing\\b`, 'i')],
 ];
-export function detectPartType(text) {
+export function detectPartType(text, cfg = null) {
   // "כולל סוללה" / "עם מסגרת" מתארים את החלק, לא קובעים את הסוג
   const t = String(text || '').replace(/(^|\s)(כולל|עם|ללא|בלי|\+)\s*\S+/g, ' ');
+  const own = cfg && customRepairOf(t, cfg); // סוג שהמנהל הוסיף ("מסך חיצוני") קודם
+  if (own) return own;
   for (const [id, re] of PART_WORDS) if (re.test(t)) return id;
   return null;
 }
@@ -107,10 +111,16 @@ export function makeItem(name, note, price, ctxBrand, raw, opts) {
       note = String(note).replace(m[0], ' ').replace(/\s+/g, ' ').trim();
     }
   }
-  const variant = fixQuality([note, hebrewAndTags(id.extra)].filter(Boolean).join(' '));
+  // בחלקים נשמרות גם מילים באנגלית (Incell, Service Pack…) – הן אומרות מה האיכות.
+  // dropExtra: שורה שירשה את שם הדגם משורה קודמת עם מחיר – המילים הנוספות שם היו האיכות של השורה ההיא
+  const partType = isPart ? detectPartType(`${name} ${note || ''}`, opts.cfg) || opts.partType || 'screen' : null;
+  // ...אלא אם בשורה הזו אין איכות בכלל ("כולל מסגרת 450 ללא מסגרת 380") – אז היא ממשיכה את האיכות של הקודמת
+  const keepExtra = !opts.dropExtra || !resolveQuality(partType, note, opts.cfg).qid;
+  const extra = isPart ? (keepExtra ? partsExtra(id.extra) : '') : hebrewAndTags(id.extra);
+  const variant = fixQuality([note, extra].filter(Boolean).join(' '));
   const item = {
     kind: isPart ? 'part' : 'device',
-    partType: isPart ? detectPartType(`${name} ${note || ''}`) || opts.partType || 'screen' : null,
+    partType,
     brand: id.brand, model: id.model, storage: isPart ? null : id.storage,
     family: id.family, tier: id.tier, devKind: id.kind, category: id.category,
     name: isPart ? id.model : displayName(id),
@@ -120,8 +130,43 @@ export function makeItem(name, note, price, ctxBrand, raw, opts) {
   item.mkey = modelKey(id);
   item.key = isPart ? `${item.mkey}|${item.partType}|${item.variant}` : `${item.mkey}|${item.storage || ''}|${item.variant}`;
   item.ok = Boolean(item.model && price > 0);
+  // חלק לדגם שלא זוהה (בלי יצרן ובלי סדרה, למשל "17 pro" בלי "אייפון") – לא נשמר עד שבוחרים דגם
+  if (isPart && !id.family && !id.brand) { item.ok = false; item.unknownModel = true; }
   if (id.excluded) item.excluded = true;
   return item;
+}
+
+const PART_TAGS = { oled: 'OLED', amoled: 'AMOLED', incell: 'Incell', lcd: 'LCD', tft: 'TFT', sp: 'SP' };
+// עברית נשארת; באנגלית – רק מילים (בלי מספרים ובלי אות בודדת: "A" מכותרת "Galaxy A", "A065" קוד דגם)
+const NOT_QUALITY = new Set(['note', 'plus', 'pro', 'max', 'ultra', 'mini', 'lite', 'fe', 'edge', 'neo', 'prime']);
+const partsExtra = (extra) => String(extra || '').split(' ').filter(Boolean)
+  .filter((t) => /[\u0590-\u05ff]/.test(t) || (/^[a-z]{2,}$/i.test(t) && !MODEL_WORDS.has(t.toLowerCase()) && !NOT_QUALITY.has(t.toLowerCase())))
+  .map((t) => PART_TAGS[t] || t).join(' ');
+
+// שורה עם כמה מחירים: "אינסל 150, אולד 250, מקורי סרוויס 1170" → שלוש שורות
+export function splitMulti(line) {
+  const tk = toShekel(line).split(/\s+/).filter(Boolean);
+  const val = (t) => {
+    const m = t.replace(/^[₪:,;|/(\-]+|[₪.,;|/):\-]+$/g, '').match(/^(\d{1,3}(?:,\d{3})+|\d{2,6})$/);
+    if (!m) return null;
+    const v = num(m[1]);
+    return v >= 50 && !STORAGE.has(v) ? v : null;
+  };
+  let at = tk.map((t, i) => (val(t) != null ? i : -1)).filter((i) => i >= 0);
+  at = at.filter((i, k) => !(k < at.length - 1 && /^20[1-3]\d$/.test(String(val(tk[i]))))); // שנה ("A3 2016") ולא מחיר
+  if (at.length < 2) return [line];
+  const segs = [];
+  let start = 0;
+  at.forEach((i, k) => {
+    let end = i;
+    if (tk[end + 1] === '₪') end++;
+    if (k === at.length - 1) end = tk.length - 1;
+    segs.push(tk.slice(start, end + 1).join(' ').replace(/^[,;|/\-–\s]+|[,;|\s]+$/g, ''));
+    start = end + 1;
+  });
+  // כל חלק צריך מילה לפני המחיר, אחרת זו לא רשימת איכויות
+  if (segs.some((g) => !/[\p{L}]/u.test(g.replace(/₪/g, '')))) return [line];
+  return segs;
 }
 
 // תגיות ומילים בעברית שנשארו – לתצוגה כ"וריאנט"
@@ -158,8 +203,8 @@ export function parseMessage(text, opts = {}) {
 
 function parseFree(lines, opts) {
   const items = [];
-  let ctxBrand = null, pending = [], base = null, last = null;
-  const L = lines.map(clean);
+  let ctxBrand = null, pending = [], base = null, last = null, basePriced = false;
+  const L = opts.kind === 'parts' ? lines.map(clean).flatMap((l) => (l ? splitMulti(l) : [l])) : lines.map(clean);
   for (let i = 0; i < L.length; i++) {
     const line = L[i];
     if (!line) { pending = []; base = null; last = null; continue; }
@@ -192,16 +237,16 @@ function parseFree(lines, opts) {
       if (pending.length && !hasModel(pending.join(' '))) note = pending.join(' ');
       else if (pending.length && !identify(p.rest, ctxBrand).family) name = pending.join(' ') + ' ' + p.rest;
       pending = [];
-      base = name;
+      base = name; basePriced = true;
     } else {
-      if (pending.length) { base = pending.join(' '); pending = []; }
+      if (pending.length) { base = pending.join(' '); pending = []; basePriced = false; }
       if (!base) { // מחיר בלי שם – לא ניתן לשייך
         items.push({ ...makeItem(p.rest, '', p.price, ctxBrand, line, opts), ok: false });
         continue;
       }
       name = base; note = p.rest; fromBase = true;
     }
-    const it = makeItem(name, note, p.price, ctxBrand, (fromBase ? base + ' / ' : '') + line, opts);
+    const it = makeItem(name, note, p.price, ctxBrand, (fromBase ? base + ' / ' : '') + line, fromBase && basePriced ? { ...opts, dropExtra: true } : opts);
     items.push(it);
     last = it;
   }
@@ -270,6 +315,7 @@ export function manualItem(f, kind, prev = null, now = Date.now()) {
   it.key = opts.kind === 'parts' ? `${it.mkey}|${it.partType}|${it.variant}` : `${it.mkey}|${it.storage || ''}|${it.variant}`;
   if (f.categoryOverride) it.categoryOverride = f.categoryOverride;
   it.manual = true;
+  delete it.unknownModel; // בהזנה ידנית שם חופשי מותר
   it.ok = Boolean(it.model && it.price > 0);
   const priceChanged = prev && prev.price !== it.price;
   return {

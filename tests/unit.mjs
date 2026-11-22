@@ -11,6 +11,8 @@ import { pack, unpack, readPriceListDoc, readCatalogDoc, MAX_FIELD } from '../sr
 import { bulkPrice, applyBulkPrice, uniqueKey } from '../src/lib/items.js';
 import { DEFAULT_CONFIG as CFG } from '../src/lib/defaults.js';
 import { mergeConfig } from '../src/lib/store.js';
+import { resolveQuality, optionName, optionKey, parseReply, manualPart, allRepairs, stripRepairWords } from '../src/lib/repairs.js';
+import { splitMulti } from '../src/lib/parser.js';
 
 const devices = (t) => parseMessage(t, { kind: 'devices' });
 const parts = (t, partType = 'screen') => parseMessage(t, { kind: 'parts', partType });
@@ -436,3 +438,106 @@ test('רווח מכשירים: אחוז עם מינימום/מקסימום בש�
   assert.equal(afterVat(236, base), 200);
   assert.equal(roundPrice(4050.0000000000005, base), 4050);
 });
+
+// ---------- מחירון תיקונים: איכויות מאוחדות, מסגרת, סוגי תיקון ----------
+const RC = mergeConfig(null);
+const q = (v, repair = 'screen') => optionName(resolveQuality(repair, v, RC));
+
+test('איכות: כל כתיב של ספק מתורגם לשם אחד (כולל אנגלית, שגיאות כתיב ומסגרת)', () => {
+  assert.equal(q('מקורי סאני'), 'מקורי סרוויס');
+  assert.equal(q('Service Pack'), 'מקורי סרוויס');
+  assert.equal(q('סאני כוולל מסגרת'), 'מקורי סרוויס · כולל מסגרת');
+  assert.equal(q('מקורי סאניללא מסגרת'), 'מקורי סרוויס · ללא מסגרת');
+  assert.equal(q('איינסל'), 'אינסל');
+  assert.equal(q('incell'), 'אינסל');
+  assert.equal(q('תחליפי כלל מסגרת אולד'), 'OLED · כולל מסגרת', 'תחליפי OLED הוא OLED');
+  assert.equal(q('soft oled'), 'Soft OLED');
+  assert.equal(q('hard oled'), 'OLED');
+  assert.equal(q('מקורי פירוק'), 'מקורי משופץ');
+  assert.equal(q('חליפי'), 'תחליפי');
+  assert.equal(q('מקורית', 'battery'), 'מקורית');
+  assert.equal(q(''), 'סטנדרטי');
+  assert.equal(q('ללא מסגרת'), 'סטנדרטי · ללא מסגרת');
+  const u = resolveQuality('screen', 'GX', RC);
+  assert.deepEqual([u.qid, u.note], ['', 'gx'], 'מילה לא מוכרת – נשארת כהערה (לבחירה בעדכון)');
+  // ברירת מחדל של ספק לשורות בלי איכות
+  assert.equal(optionName(resolveQuality('screen', 'כולל מסגרת', RC, 'copy')), 'תחליפי · כולל מסגרת');
+});
+
+test('הודעת ספק חלקים: כמה מסכים לאותו דגם – כל איכות נשמרת בנפרד', () => {
+  const cfg = RC;
+  const read = (t) => parseMessage(t, { kind: 'parts', partType: 'screen', cfg }).map((x) => [x.ok, x.mkey, x.partType, optionName(resolveQuality(x.partType, x.variant, cfg)), x.price]);
+  const ip = 'apple|iphone 17 pro';
+  const want = [[true, ip, 'screen', 'אינסל', 150], [true, ip, 'screen', 'OLED', 250], [true, ip, 'screen', 'מקורי סרוויס', 1170]];
+  assert.deepEqual(read('אייפון 17 פרו\nאינסל 150\nאולד 250\nמקורי סרוויס 1170'), want);
+  assert.deepEqual(read('iPhone 17 Pro incell 150\niPhone 17 Pro OLED 250\niPhone 17 Pro Service Pack 1170'), want, 'אנגלית לא הולכת לאיבוד');
+  assert.deepEqual(read('מסך לאייפון 17 פרו: אינסל 150, אולד 250, מקורי סרוויס 1170'), want, 'כמה מחירים בשורה אחת');
+  assert.deepEqual(read('A54 מקורי סאני כולל מסגרת 450 ללא מסגרת 380').map((x) => x.slice(3)), [['מקורי סרוויס · כולל מסגרת', 450], ['מקורי סרוויס · ללא מסגרת', 380]]);
+  // דגם בלי יצרן ("17 pro" יכול להיות גם Xiaomi 17 Pro) – לא נשמר עד שבוחרים
+  const u = parseMessage('17 pro incell 150', { kind: 'parts', partType: 'screen', cfg });
+  assert.deepEqual([u[0].ok, u[0].unknownModel], [false, true]);
+  // שנה בשם הדגם היא לא מחיר; שורה עם מחיר אחד לא מתפרקת
+  assert.deepEqual(splitMulti('Galaxy A3 2016 מסך 300'), ['Galaxy A3 2016 מסך 300']);
+  assert.deepEqual(splitMulti('Galaxy S23 FE 350 / 400'), ['Galaxy S23 FE 350 / 400']);
+  // מסך חיצוני (סוג תיקון שנוסף כברירת מחדל) מזוהה לפני "מסך"
+  const z = parseMessage('Galaxy Z Flip 5 מסך חיצוני מקורי סאני 400\nGalaxy Z Flip 5 מסך מקורי סאני 900', { kind: 'parts', partType: 'screen', cfg });
+  assert.deepEqual(z.map((x) => x.partType), ['outer', 'screen']);
+});
+
+test('מחיר תיקון: אותה איכות אצל שני ספקים (בכתיב שונה) – הזול, ומחיר ידני ישן עדיין תקף', () => {
+  const lists = {
+    pa: { items: mergeItems([], parseMessage('Galaxy A54 מקורי סאני ₪200\nGalaxy A54 חליפי ₪120', { kind: 'parts', partType: 'screen', cfg: RC })) },
+    pb: { items: mergeItems([], parseMessage('Galaxy A54 Service Pack ₪190\nGalaxy A54 תחליפי ₪125', { kind: 'parts', partType: 'screen', cfg: RC })) },
+  };
+  const cfg = mergeConfig({ suppliers: [{ id: 'pa', name: 'א', type: 'parts' }, { id: 'pb', name: 'ב', type: 'parts' }] });
+  const cat = buildCatalog(lists, null, cfg);
+  const m = cat.models.find((x) => x.mkey === 'samsung|galaxy a54');
+  const rq = repairQuote(m, 'screen', cat.partIndex.get('samsung|galaxy a54|screen'), cfg);
+  assert.deepEqual(rq.options.map((o) => [o.quality, o.part.price, o.part.supplierId, o.final, o.suppliers.length]), [['תחליפי', 120, 'pa', 240, 2], ['מקורי סרוויס', 190, 'pb', 310, 2]]);
+  const legacy = { ...cfg, priceOverrides: { 'samsung|galaxy a54|screen|מקורי סאני': 333 } };
+  const o2 = repairQuote(m, 'screen', cat.partIndex.get('samsung|galaxy a54|screen'), legacy).options.find((o) => o.qid === 'service');
+  assert.equal(o2.final, 333);
+  assert.equal(o2.overrideKey, optionKey('samsung|galaxy a54', 'screen', 'service|'));
+  assert.ok(o2.legacyKeys.includes('samsung|galaxy a54|screen|מקורי סאני'));
+});
+
+test('עדכון מחיר מעמוד הדגם: תשובת ספק כמו שהיא, ופריט ידני שחוזר לאותה איכות', () => {
+  const rows = parseReply('אינסל 150, אולד 250, מקורי סרוויס 1170\nכולל מסגרת 1250', 'screen', RC, { extractPrice, splitMulti });
+  assert.deepEqual(rows.map((r) => [r.qid, r.frame, r.price]), [['incell', null, 150], ['oled', null, 250], ['service', null, 1170], ['', 'with', 1250]]);
+  const model = { mkey: 'apple|iphone 17 pro', brand: 'Apple', model: 'iPhone 17 Pro', family: 'iphone', tier: 'new' };
+  const it = manualPart({ model, repair: 'screen', qid: 'service', frame: 'with', price: 1170, cfg: RC, now: 5 });
+  assert.equal(it.variant, 'מקורי סרוויס כולל מסגרת');
+  assert.equal(optionName(resolveQuality('screen', it.variant, RC)), 'מקורי סרוויס · כולל מסגרת');
+  assert.deepEqual([it.kind, it.partType, it.manual, it.price, it.key], ['part', 'screen', true, 1170, 'apple|iphone 17 pro|screen|מקורי סרוויס כולל מסגרת']);
+  const it2 = manualPart({ model, repair: 'screen', qid: 'service', frame: 'with', price: 1100, cfg: RC, now: 9, prev: it });
+  assert.deepEqual([it2.prevPrice, it2.changedAt], [1170, 9]);
+});
+
+test('סוגי תיקון שהמנהל הוסיף: בחיפוש, בתיקונים ובעלות העבודה', () => {
+  const cfg = mergeConfig({ customRepairs: [{ id: 'outer', label: 'מסך חיצוני', words: ['חיצוני'] }, { id: 'spk', label: 'רמקול', words: ['speaker'] }], labor: { ...CFG.labor, 'galaxy:z': { ...CFG.labor['galaxy:z'], outer: 300 } } });
+  assert.deepEqual(allRepairs(cfg).map((r) => r.id).slice(-2), ['outer', 'spk']);
+  assert.equal(detectRepair('z flip 5 מסך חיצוני', cfg), 'outer');
+  assert.equal(detectRepair('a54 רמקול', cfg), 'spk');
+  assert.equal(detectRepair('a54 מסך', cfg), 'screen');
+  assert.equal(stripRepairWords('Note 13 Pro+ מסך', cfg), 'Note 13 Pro+');
+  // פריט שנשמר לפני שהסוג נוסף ("מסך" עם "חיצוני") עובר לסוג החדש
+  const lists = { pa: { items: mergeItems([], parseMessage('Galaxy Z Flip 5 מקורי סאני חיצוני ₪400', { kind: 'parts', partType: 'screen' })) } };
+  const cat = buildCatalog(lists, null, cfg);
+  const m = cat.models[0];
+  assert.equal(cat.partIndex.get(`${m.mkey}|outer`)?.length, 1);
+  const rq = repairQuote(m, 'outer', cat.partIndex.get(`${m.mkey}|outer`), cfg);
+  assert.deepEqual([rq.label, rq.options[0].quality, rq.options[0].final], ['מסך חיצוני', 'מקורי סרוויס', 700]);
+  // עובדים: הסוגים החדשים מגיעים עם ההגדרות הציבוריות
+  assert.deepEqual(publicConfig(cfg).customRepairs.map((r) => r.label), ['מסך חיצוני', 'רמקול']);
+
+  // ברירת המחדל: מסך חיצוני בלי עלות עבודה משלו – מחושב כמו מסך (כמו עד עכשיו), ורק כשיש לו חלק
+  const def = mergeConfig(null);
+  const cat2 = buildCatalog(lists, null, def);
+  const rq2 = repairQuote(m, 'outer', cat2.partIndex.get(`${m.mkey}|outer`), def);
+  assert.deepEqual([rq2.options[0].final, rq2.laborOnly], [900, null]); // 400 + עבודת מסך ב-Galaxy Z (500)
+  assert.match(rq2.labor.source, /כמו מסך/);
+  const iphone = { mkey: 'apple|iphone 15', model: 'iPhone 15', family: 'iphone', tier: 'new' };
+  const rq3 = repairQuote(iphone, 'outer', [], def);
+  assert.deepEqual([rq3.labor, rq3.laborOnly], [null, null], 'באייפון אין "מסך חיצוני"');
+});
+

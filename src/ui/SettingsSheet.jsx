@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { REPAIRS, LABOR_GROUPS } from '../lib/defaults.js';
+import { allRepairs, repairLabel, qualitiesFor, qualityLabel, FRAME, DEFAULT_QUALITIES } from '../lib/repairs.js';
 import { SEGMENTS, rowLabel } from '../lib/devices.js';
 import { fmt, Icon } from './util.jsx';
 import ItemsManager from './ItemsManager.jsx';
@@ -31,7 +32,8 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
   }, [d]);
   useEffect(() => () => { if (dirty.current) { dirty.current = false; onSaveConfig(latest.current).catch(() => toast('שמירת ההגדרות נכשלה')); } }, []);
 
-  const tabs = [['items', 'פריטים'], ['labor', 'עלות עבודה'], ['rules', 'חריגים'], ['margins', 'רווח מכשירים'], ['addons', 'תוספות'], ['suppliers', 'ספקים'], ['general', 'כללי'], ['users', requests.length ? `עובדים (${requests.length})` : 'עובדים']];
+  const tabs = [['items', 'פריטים'], ['labor', 'עלות עבודה'], ['rules', 'חריגים'], ['repairs', 'סוגי תיקון ואיכויות'], ['margins', 'רווח מכשירים'], ['addons', 'תוספות'], ['suppliers', 'ספקים'], ['general', 'כללי'], ['users', requests.length ? `עובדים (${requests.length})` : 'עובדים']];
+  const reps = allRepairs(d);
 
   return (
     <>
@@ -49,11 +51,11 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
               <div className="muted" style={{ margin: '8px 4px' }}>עלות עבודה ללא חלק, לפי עמודות המחירון ({d.laborUpdated}). שדה ריק = לא מוגדר.</div>
               <div className="card scroll-x" style={{ padding: 8 }}>
                 <table className="grid-table">
-                  <thead><tr><th>סדרה</th>{REPAIRS.map((r) => <th key={r.id}>{r.label}</th>)}</tr></thead>
+                  <thead><tr><th>סדרה</th>{reps.map((r) => <th key={r.id}>{r.label}</th>)}</tr></thead>
                   <tbody>
                     {LABOR_GROUPS.map((g) => (
                       <tr key={g.id}><td>{g.label}</td>
-                        {REPAIRS.map((r) => (
+                        {reps.map((r) => (
                           <td key={r.id}><input className="input sm num" inputMode="numeric" value={d.labor[g.id]?.[r.id] ?? ''}
                             onChange={(e) => set((y) => { y.labor[g.id] = y.labor[g.id] || {}; y.labor[g.id][r.id] = numOrNull(e.target.value); })} /></td>
                         ))}
@@ -66,6 +68,7 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
           )}
 
           {tab === 'rules' && <Rules d={d} set={set} catalog={catalog} />}
+          {tab === 'repairs' && <RepairTypes d={d} set={set} />}
 
           {tab === 'margins' && (
             <div className="card" style={{ padding: 14 }}>
@@ -86,7 +89,7 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
                   <div className="section-title">אחוזי רווח לפריטים ({Object.keys(d.marginOverrides).length})</div>
                   {Object.entries(d.marginOverrides).map(([k, v]) => (
                     <div key={k} className="sup-row" style={{ padding: '6px 0', borderTop: '1px solid var(--line)' }}>
-                      <span style={{ fontSize: 13 }}>{keyLabel(k, catalog)}</span>
+                      <span style={{ fontSize: 13 }}>{keyLabel(k, catalog, d)}</span>
                       <span><span className="num">{v}%</span> <button className="btn danger" style={{ height: 28 }} onClick={() => set((y) => { delete y.marginOverrides[k]; })}>הסר</button></span>
                     </div>
                   ))}
@@ -100,7 +103,7 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
               {d.addons.map((a, i) => (
                 <div key={a.id} className="row">
                   <div className="main"><div className="t1" style={{ fontSize: 15 }}>{a.label}</div>
-                    <div className="t2">{a.repairs ? REPAIRS.filter((r) => a.repairs.includes(r.id)).map((r) => r.label).join(', ') : 'כל התיקונים'}{a.manager ? ' · באישור מנהל סניף' : ''}</div></div>
+                    <div className="t2">{a.repairs ? reps.filter((r) => a.repairs.includes(r.id)).map((r) => r.label).join(', ') : 'כל התיקונים'}{a.manager ? ' · באישור מנהל סניף' : ''}</div></div>
                   <input className="input sm num" inputMode="numeric" value={a.amount ?? ''} onChange={(e) => set((y) => { y.addons[i].amount = numOrNull(e.target.value); })} />
                 </div>
               ))}
@@ -118,6 +121,13 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
                     </select>
                     <input className="input" style={{ flex: '1 1 140px' }} inputMode="tel" placeholder="וואטסאפ 05X…" value={s.phone || ''} onChange={(e) => set((y) => { y.suppliers[i].phone = e.target.value; })} />
                     <button className="icon-btn" onClick={() => set((y) => { y.suppliers.splice(i, 1); })}>{Icon.trash}</button>
+                    {s.type === 'parts' && (
+                      <label className="field" style={{ width: '100%', margin: 0 }}><span>שורות בלי שם איכות אצל הספק הזה הן</span>
+                        <select className="input" value={s.defaultQuality || ''} onChange={(e) => set((y) => { y.suppliers[i].defaultQuality = e.target.value; })}>
+                          <option value="">לא ידוע ("סטנדרטי")</option>
+                          {qualitiesFor('screen', d).map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+                        </select></label>
+                    )}
                   </div>
                 ))}
               </div>
@@ -149,7 +159,7 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
                   <div className="section-title">מחירים ידניים ({Object.keys(d.priceOverrides).length})</div>
                   {Object.entries(d.priceOverrides).map(([k, v]) => (
                     <div key={k} className="sup-row" style={{ padding: '6px 0', borderTop: '1px solid var(--line)' }}>
-                      <span style={{ fontSize: 13 }}>{keyLabel(k, catalog)}</span>
+                      <span style={{ fontSize: 13 }}>{keyLabel(k, catalog, d)}</span>
                       <span><span className="num">{fmt(v)}</span> <button className="btn danger" style={{ height: 28 }} onClick={() => set((y) => { delete y.priceOverrides[k]; })}>הסר</button></span>
                     </div>
                   ))}
@@ -169,10 +179,96 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
 }
 
 // שם קריא למפתח של מחיר ידני / אחוז רווח: שורה ברשימת המכשירים או תיקון (דגם · תיקון · איכות)
-function keyLabel(k, catalog) {
+function keyLabel(k, catalog, cfg) {
   if (k.startsWith('row:')) { const row = catalog?.rows?.find((r) => `row:${r.id}` === k); return row ? rowLabel(row) : 'מכשיר שנמחק מהרשימה'; }
   const p = k.split('|');
-  return [p[1], REPAIRS.find((r) => r.id === p[2])?.label || p[2], p.slice(3).join(' ')].filter(Boolean).join(' · ');
+  const name = catalog?.models?.find((m) => m.mkey === `${p[0]}|${p[1]}`)?.model || p[1];
+  let q = p.slice(3).join(' ');
+  if (p[3]?.startsWith('q:')) { // מפתח חדש: איכות + מסגרת
+    const qid = p[3].slice(2);
+    q = [qid.startsWith('?') ? qid.slice(1) || 'סטנדרטי' : qualityLabel(p[2], qid, cfg) || qid, FRAME[p[4]] || ''].filter(Boolean).join(' · ');
+  }
+  return [name, repairLabel(p[2], cfg), q].filter(Boolean).join(' · ');
+}
+
+// סוגי תיקון (6 קבועים + שהוספת), רמות האיכות של כל סוג והמילים של הספקים שמתורגמות אליהן
+const splitWords = (s) => String(s || '').split(/[,،\n]+/).map((w) => w.trim()).filter(Boolean);
+function RepairTypes({ d, set }) {
+  const reps = allRepairs(d);
+  const [rid, setRid] = useState('screen');
+  const qs = qualitiesFor(rid, d);
+  const own = Array.isArray(d.qualities?.[rid]) && d.qualities[rid].length > 0;
+  const editQ = (fn) => set((y) => { y.qualities = y.qualities || {}; const list = (y.qualities[rid]?.length ? y.qualities[rid] : qualitiesFor(rid, y)).map((x) => ({ ...x, words: [...(x.words || [])] })); fn(list); y.qualities[rid] = list; });
+  return (
+    <>
+      <div className="section-title">סוגי תיקון</div>
+      <div className="muted" style={{ margin: '0 4px 8px' }}>6 הסוגים הראשונים קבועים. סוג שתוסיף יופיע בחיפוש, בעמוד הדגם ובטבלת עלות העבודה (את העלות לכל סדרה קובעים בלשונית "עלות עבודה"). המילים הן מה שהספקים כותבים – שורה עם אחת מהן תשויך לסוג הזה.</div>
+      <div className="card list">
+        {REPAIRS.map((r) => <div key={r.id} className="row"><div className="main"><div className="t1" style={{ fontSize: 15 }}>{r.label}</div></div><span className="muted">קבוע</span></div>)}
+        {(d.customRepairs || []).map((r, i) => (
+          <div key={r.id} className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+            <input className="input" style={{ flex: '1 1 120px' }} placeholder="שם התיקון" value={r.label} onChange={(e) => set((y) => { y.customRepairs[i].label = e.target.value; })} />
+            <input className="input" style={{ flex: '2 1 180px' }} placeholder="מילים של ספקים, מופרדות בפסיק" defaultValue={(r.words || []).join(', ')}
+              onBlur={(e) => set((y) => { y.customRepairs[i].words = splitWords(e.target.value); })} />
+            <button className="icon-btn" aria-label="מחק סוג תיקון" onClick={() => set((y) => { y.customRepairs.splice(i, 1); })}>{Icon.trash}</button>
+            <label className="field" style={{ width: '100%', margin: 0 }}><span>כשאין עלות עבודה לסוג הזה, חלק עם מחיר יחושב עם העבודה של</span>
+              <select className="input" value={r.laborFrom || ''} onChange={(e) => set((y) => { y.customRepairs[i].laborFrom = e.target.value || null; })}>
+                <option value="">— בלי (אין מחיר סופי עד שתקבע עלות)</option>
+                {REPAIRS.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+              </select></label>
+          </div>
+        ))}
+      </div>
+      <div className="actions"><button className="btn" onClick={() => set((y) => { y.customRepairs = [...(y.customRepairs || []), { id: 'c' + Date.now().toString(36), label: '', words: [] }]; })}>{Icon.plus}<span>סוג תיקון חדש</span></button></div>
+
+      <div className="section-title">רמות איכות</div>
+      <div className="muted" style={{ margin: '0 4px 8px' }}>השם הוא מה שהלקוח רואה. המילים הן איך שהספקים כותבים את האיכות (בכל שפה ובכל כתיב). הסדר קובע מה קודם כשכתובות כמה: "מקורי סאני" → מקורי סרוויס, "תחליפי OLED" → OLED.</div>
+      <select className="input" value={rid} onChange={(e) => setRid(e.target.value)}>
+        {reps.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+      </select>
+      <div className="card list" style={{ marginTop: 8 }}>
+        {qs.map((x, i) => (
+          <div key={x.id + i} className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+            <input className="input" style={{ flex: '1 1 110px' }} value={x.label} onChange={(e) => editQ((l) => { l[i].label = e.target.value; })} />
+            <input className="input" style={{ flex: '2 1 180px' }} dir="auto" defaultValue={(x.words || []).join(', ')} key={(x.words || []).join(',')}
+              onBlur={(e) => editQ((l) => { l[i].words = splitWords(e.target.value); })} />
+            <span style={{ display: 'flex', gap: 4 }}>
+              <button className="icon-btn" aria-label="למעלה" disabled={i === 0} onClick={() => editQ((l) => { [l[i - 1], l[i]] = [l[i], l[i - 1]]; })}>↑</button>
+              <button className="icon-btn" aria-label="למטה" disabled={i === qs.length - 1} onClick={() => editQ((l) => { [l[i + 1], l[i]] = [l[i], l[i + 1]]; })}>↓</button>
+              <button className="icon-btn" aria-label="מחק איכות" onClick={() => editQ((l) => { l.splice(i, 1); })}>{Icon.trash}</button>
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="actions">
+        <button className="btn" onClick={() => editQ((l) => { l.push({ id: 'q' + Date.now().toString(36), label: 'איכות חדשה', words: [] }); })}>{Icon.plus}<span>איכות</span></button>
+        {own && <button className="btn" onClick={() => set((y) => { delete y.qualities[rid]; })}>{DEFAULT_QUALITIES[rid] ? 'חזרה לרשימה ההתחלתית' : 'חזרה לברירת המחדל'}</button>}
+      </div>
+
+      {(d.qualityNoise || []).length > 0 && (
+        <>
+          <div className="section-title">מילים שאינן איכות</div>
+          <div className="card list">
+            {d.qualityNoise.map((w, i) => (
+              <div key={w} className="row"><div className="main"><div className="t1" style={{ fontSize: 15 }}>{w}</div></div>
+                <button className="btn" onClick={() => set((y) => { y.qualityNoise.splice(i, 1); })}>הסר</button></div>
+            ))}
+          </div>
+        </>
+      )}
+      {(d.ignoredParts || []).length > 0 && (
+        <>
+          <div className="section-title">שורות חלקים בדילוג קבוע</div>
+          <div className="card list">
+            {d.ignoredParts.map((x, i) => (
+              <div key={x.key} className="row"><div className="main"><div className="t1" style={{ fontSize: 15 }} dir="auto">{x.label}</div></div>
+                <button className="btn" onClick={() => set((y) => { y.ignoredParts.splice(i, 1); })}>בטל דילוג</button></div>
+            ))}
+          </div>
+        </>
+      )}
+    </>
+  );
 }
 
 function Rules({ d, set, catalog }) {
@@ -192,7 +288,7 @@ function Rules({ d, set, catalog }) {
               <div className="t1" style={{ fontSize: 15 }}>{r.scope === 'model' ? 'דגם' : 'סדרה'}: {r.match}</div>
               <div className="t2">
                 {r.group ? `משויך ל: ${LABOR_GROUPS.find((g) => g.id === r.group)?.label}` : ''}
-                {Object.entries(r.labor || {}).filter(([, v]) => v != null && v !== '').map(([k, v]) => ` ${REPAIRS.find((x) => x.id === k)?.label} ${fmt(v)}`).join(' ·')}
+                {Object.entries(r.labor || {}).filter(([, v]) => v != null && v !== '').map(([k, v]) => ` ${repairLabel(k, d)} ${fmt(v)}`).join(' ·')}
                 {r.note ? ` · ${r.note}` : ''}
               </div>
             </div>
@@ -219,7 +315,7 @@ function Rules({ d, set, catalog }) {
           </label>
           <div className="muted">עלות עבודה ספציפית (ריק = לפי הטבלה):</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: 8, marginTop: 8 }}>
-            {REPAIRS.map((r) => (
+            {allRepairs(d).map((r) => (
               <label key={r.id} style={{ fontSize: 13, color: 'var(--text2)' }}>{r.label}
                 <input className="input num" inputMode="numeric" value={draft.labor?.[r.id] ?? ''} onChange={(e) => setDraft({ ...draft, labor: { ...draft.labor, [r.id]: numOrNull(e.target.value) } })} />
               </label>

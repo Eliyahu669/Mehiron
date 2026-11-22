@@ -5,6 +5,7 @@ import { buildFullCatalog, liteCatalog, getRepairQuote, getDeviceQuotes } from '
 import { SEGMENTS, SHEETS, CATALOG_ID, defaultCatalog, migrateDeviceConfig, sortDeviceModels } from './lib/devices.js';
 import { fmtStorage } from './lib/normalize.js';
 import { REPAIRS } from './lib/defaults.js';
+import { allRepairs } from './lib/repairs.js';
 import { fmt, Fresh, Icon, daysLabel } from './ui/util.jsx';
 import ModelSheet from './ui/ModelSheet.jsx';
 import ImportSheet from './ui/ImportSheet.jsx';
@@ -14,10 +15,9 @@ import { useBack, useExitGuard } from './ui/useBack.js';
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* */ } };
 
-// מכשירים: סינון לפי חברה (הגיליונות של הרשימה) ולפי סגמנט
+// סינון לפי חברה (Apple / Samsung / Xiaomi / אחרים) – בשני המחירונים; במכשירים גם לפי סגמנט, בתיקונים לפי סוג תיקון
 const DEVICE_SEGMENTS = SEGMENTS.map((s) => ({ id: s.id, label: s.label.replace('מכשירי ', '') }));
-const REPAIR_BRANDS = ['Apple', 'Samsung', 'Xiaomi'].map((b) => ({ id: b, label: b }));
-const DEVICE_BRANDS = SHEETS.map((s) => ({ id: s.id, label: s.label }));
+const BRANDS = SHEETS.map((s) => ({ id: s.id, label: s.label }));
 const EMPTY = { query: '', brand: null, pill: null };
 const BIG_STORAGE = /(^|\s)(64|128|256|512|1024)\s*(gb|g|גיגה)?(?=\s|$)|(^|\s)([12])\s*(tb|טרה)(?=\s|$)/i;
 
@@ -106,14 +106,15 @@ export default function App({ store }) {
     const active = query.trim() || brand || pill;
     if (!active) return { repair: null, models: [] };
     if (mode === 'repairs') {
-      const q = [query, pill ? REPAIRS.find((r) => r.id === pill)?.label : ''].filter(Boolean).join(' ');
-      const r = searchModels(q, catalog, { brand, kindFilter: 'repairs' });
+      const r = searchModels(query, catalog, { sheet: brand, kindFilter: 'repairs', cfg });
+      const repair = pill || r.repair;
       // רק דגמים שיש להם מחיר תיקון (למשל אייפון 8 / SE לא מתוקנים – לא מוצגים)
-      const has = (m) => (r.repair ? [r.repair] : REPAIRS.map((x) => x.id)).some((id) => {
+      const has = (m) => (repair ? [repair] : allRepairs(cfg).map((x) => x.id)).some((id) => {
         const qt = getRepairQuote(m, id, catalog, cfg);
         return qt.options.some((o) => o.final != null) || qt.laborOnly != null;
       });
-      return { ...r, models: r.models.filter(has) };
+      const models = r.models.filter(has);
+      return { repair, models: query.trim() ? models : sortDeviceModels(models) };
     }
     const q = storageQ ? query.replace(BIG_STORAGE, ' ') : query;
     const r = searchModels(q, { models: catalog.devModels || [] }, { kindFilter: 'devices' });
@@ -155,9 +156,9 @@ export default function App({ store }) {
           {query && <button className="clear" onClick={() => { setF({ query: '' }); inputRef.current?.focus(); }}>✕</button>}
         </div>
         <div className="pills">
-          {(mode === 'repairs' ? REPAIR_BRANDS : DEVICE_BRANDS).map((b) => <button key={b.id} className={'pill' + (brand === b.id ? ' on' : '')} onClick={() => setF({ brand: brand === b.id ? null : b.id })}>{b.label}</button>)}
+          {BRANDS.map((b) => <button key={b.id} className={'pill' + (brand === b.id ? ' on' : '')} onClick={() => setF({ brand: brand === b.id ? null : b.id })}>{b.label}</button>)}
           <span className="pill-sep" />
-          {(mode === 'repairs' ? REPAIRS : DEVICE_SEGMENTS).map((r) => <button key={r.id} className={'pill' + (pill === r.id ? ' on' : '')} onClick={() => setF({ pill: pill === r.id ? null : r.id })}>{r.label}</button>)}
+          {(mode === 'repairs' ? allRepairs(cfg) : DEVICE_SEGMENTS).map((r) => <button key={r.id} className={'pill' + (pill === r.id ? ' on' : '')} onClick={() => setF({ pill: pill === r.id ? null : r.id })}>{r.label}</button>)}
         </div>
       </div>
 
@@ -220,10 +221,11 @@ export default function App({ store }) {
       )}
 
       {open && <ModelSheet model={open} mode={mode} storage={storageQ} catalog={catalog} cfg={cfg} customer={showCustomer} isAdmin={isAdmin} onRequest={onRequest} initialRepair={mode === 'repairs' ? repairFor : null}
+        lists={full ? data.lists : null} onSaveImport={isAdmin ? store.saveImport : null}
         onClose={() => setOpen(null)} onSaveConfig={store.saveConfig} toast={toast}
         onEditItem={isAdmin ? (fi) => { setFocusItem(fi); setPanel('settings'); } : null} />}
-      {panel === 'import' && <ImportSheet cfg={cfg} lists={data.lists} catalog={catalog} initialText={shareText} onClose={closeImport}
-        onSaveList={store.savePriceList} onSaveConfig={store.saveConfig} onSaveImport={store.saveImport} toast={toast} />}
+      {panel === 'import' && <ImportSheet cfg={cfg} lists={data.lists} catalog={catalog} kind={shareText ? null : mode === 'repairs' ? 'parts' : 'devices'} initialText={shareText} onClose={closeImport}
+        onSaveConfig={store.saveConfig} onSaveImport={store.saveImport} toast={toast} />}
       {(panel === 'settings' || panel === 'users') && <SettingsSheet cfg={cfg} catalog={catalog} lists={data.lists} store={store} focus={focusItem} initialTab={panel === 'users' ? 'users' : null} requests={requests} onClose={closeSettings} onSaveConfig={store.saveConfig} toast={toast} />}
       {msg && <div className="toast">{msg}</div>}
       {store.mode === 'cloud' && !customer && (
@@ -249,7 +251,7 @@ function ResultRow({ m, mode, repair, storage, catalog, cfg, onOpen }) {
         sub = `${qt.label} · עבודה בלבד, אין מחיר חלק`;
       } else sub = `${qt.label} · לא מוגדר`;
     } else {
-      const avail = REPAIRS.filter((r) => { const qt = getRepairQuote(m, r.id, catalog, cfg); return qt.options.length || qt.laborOnly != null; });
+      const avail = allRepairs(cfg).filter((r) => { const qt = getRepairQuote(m, r.id, catalog, cfg); return qt.options.length || qt.laborOnly != null; });
       sub = avail.length ? avail.map((r) => r.label).join(' · ') : 'אין תיקונים מוגדרים';
     }
   } else {

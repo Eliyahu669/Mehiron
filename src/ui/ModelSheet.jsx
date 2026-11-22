@@ -1,20 +1,27 @@
 import React, { useMemo, useState } from 'react';
+import { freshness, afterVat, partQuality } from '../lib/pricing.js';
 import { REPAIRS } from '../lib/defaults.js';
-import { freshness, afterVat } from '../lib/pricing.js';
+import { allRepairs, qualitiesFor, FRAME, parseReply, manualPart } from '../lib/repairs.js';
+import { extractPrice, splitMulti } from '../lib/parser.js';
 import { getRepairQuote, getDeviceQuotes } from '../lib/publish.js';
 import { segmentLabel } from '../lib/devices.js';
 import { fmtStorage } from '../lib/normalize.js';
 import { fmt, Price, Fresh, waLink, copyText, daysLabel, Icon } from './util.jsx';
 
 // mode = 'repairs' | 'devices' – כל מחירון מוצג בנפרד לגמרי
-export default function ModelSheet({ model, mode, storage, catalog, cfg, customer, isAdmin, initialRepair, onClose, onSaveConfig, toast, onEditItem, onRequest }) {
+export default function ModelSheet({ model, mode, storage, catalog, cfg, customer, isAdmin, initialRepair, onClose, onSaveConfig, toast, onEditItem, onRequest, lists, onSaveImport }) {
   const tab = mode === 'devices' ? 'devices' : 'repairs';
   const sup = useMemo(() => Object.fromEntries((cfg.suppliers || []).map((s) => [s.id, s])), [cfg.suppliers]);
 
-  const order = initialRepair ? [initialRepair, ...REPAIRS.map((r) => r.id).filter((r) => r !== initialRepair)] : REPAIRS.map((r) => r.id);
+  const ids = allRepairs(cfg).map((r) => r.id);
+  const order = initialRepair ? [initialRepair, ...ids.filter((r) => r !== initialRepair)] : ids;
   const quotes = order.map((r) => getRepairQuote(model, r, catalog, cfg));
   const shown = quotes.filter((q) => q.options.length || q.labor);
-  const missing = quotes.filter((q) => !q.options.length && !q.labor);
+  // סוג שנוסף בהגדרות מופיע בדגם רק כשיש לו עלות עבודה או חלק (כך "מסך חיצוני" לא מופיע באייפון)
+  const missing = quotes.filter((q) => !q.options.length && !q.labor && REPAIRS.some((r) => r.id === q.repair));
+  // מנהל: אפשר להזין מחיר חלק גם לתיקון שעוד אין לו כלום (בוחרים מהרשימה למטה)
+  const canEdit = isAdmin && !customer && !!onSaveImport && !!lists;
+  const [adding, setAdding] = useState(null);
 
   return (
     <>
@@ -29,13 +36,16 @@ export default function ModelSheet({ model, mode, storage, catalog, cfg, custome
           {tab === 'repairs' && (
             <>
               {shown.map((q, i) => (
-                <QuoteCard key={q.repair} q={q} model={model} cfg={cfg} sup={sup} customer={customer} isAdmin={isAdmin}
+                <QuoteCard key={q.repair} q={q} model={model} cfg={cfg} sup={sup} customer={customer} isAdmin={isAdmin} canEdit={canEdit} lists={lists} onSaveImport={onSaveImport}
                   catalog={catalog} onRequest={onRequest} defaultOpen={i === 0 || !!initialRepair && q.repair === initialRepair} onSaveConfig={onSaveConfig} toast={toast} onEditItem={onEditItem} />
               ))}
               {!shown.length && <div className="card empty">אין עדיין מחיר עבודה או חלק לדגם הזה.{isAdmin && <><br />אפשר להגדיר עלות עבודה לסדרה או לדגם בהגדרות.</>}</div>}
-              {!customer && missing.length > 0 && shown.length > 0 && (
-                <div className="muted" style={{ margin: '4px 6px' }}>לא מוגדר לדגם הזה: {missing.map((m) => m.label).join(', ')}</div>
+              {!customer && missing.length > 0 && (
+                <div className="muted" style={{ margin: '4px 6px' }}>לא מוגדר לדגם הזה: {missing.map((m) => (canEdit
+                  ? <button key={m.repair} className="disc" style={{ margin: '0 0 0 8px' }} onClick={() => setAdding(m.repair)}>{m.label} +</button>
+                  : <span key={m.repair}>{m.label} </span>))}</div>
               )}
+              {adding && <PriceEditor model={model} repair={adding} cfg={cfg} lists={lists} catalog={catalog} onSaveImport={onSaveImport} toast={toast} onDone={() => setAdding(null)} />}
             </>
           )}
           {tab === 'devices' && <Devices model={model} storage={storage} catalog={catalog} cfg={cfg} sup={sup} customer={customer} isAdmin={isAdmin} onSaveConfig={onSaveConfig} toast={toast} onEditItem={onEditItem} onRequest={onRequest} />}
@@ -45,8 +55,9 @@ export default function ModelSheet({ model, mode, storage, catalog, cfg, custome
   );
 }
 
-function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalog, defaultOpen, onSaveConfig, toast, onEditItem, onRequest }) {
+function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, canEdit, lists, onSaveImport, catalog, defaultOpen, onSaveConfig, toast, onEditItem, onRequest }) {
   const [open, setOpen] = useState(defaultOpen);
+  const [editing, setEditing] = useState(false);
   const [addonIds, setAddonIds] = useState([]);
   const [showInternal, setShowInternal] = useState(false);
   const applicable = (cfg.addons || []).filter((a) => (!a.repairs || a.repairs.includes(q0.repair)) && (!a.families || a.families.includes(model.family)));
@@ -73,9 +84,9 @@ function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalog, default
   }
 
   const toggleAddon = (id) => setAddonIds((a) => (a.includes(id) ? a.filter((x) => x !== id) : [...a, id]));
-  const setOverride = async (key, val, legacy) => {
+  const setOverride = async (key, val, legacy = []) => {
     const po = { ...(cfg.priceOverrides || {}) };
-    if (legacy && legacy !== key) delete po[legacy];
+    for (const k of legacy) if (k !== key) delete po[k];
     if (val === '' || val == null) delete po[key]; else po[key] = Number(val);
     await onSaveConfig({ ...cfg, priceOverrides: po });
     toast(val === '' ? 'המחיר הידני הוסר' : 'נשמר מחיר ידני');
@@ -132,7 +143,7 @@ function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalog, default
                 <div className="sup-row" style={{ marginTop: 4, alignItems: 'center' }}>
                   <span>מחיר ידני ללקוח</span>
                   <input className="input sm num" inputMode="numeric" defaultValue={o.overridden ? o.final : ''} placeholder="אוטומטי"
-                    onBlur={(e) => e.target.value !== String(o.overridden ? o.final : '') && setOverride(o.overrideKey, e.target.value, o.legacyKey)} />
+                    onBlur={(e) => e.target.value !== String(o.overridden ? o.final : '') && setOverride(o.overrideKey, e.target.value, o.legacyKeys)} />
                 </div>
               )}
             </div>
@@ -140,7 +151,9 @@ function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, catalog, default
         </div>
       )}
 
+      {editing && <PriceEditor model={model} repair={q.repair} cfg={cfg} lists={lists} catalog={catalog} onSaveImport={onSaveImport} toast={toast} onDone={() => setEditing(false)} />}
       <div className="actions">
+        {canEdit && !editing && <button className="btn primary" onClick={() => setEditing(true)}>{Icon.plus}<span>עדכן מחיר</span></button>}
         <a className="btn green" href={waLink('', quoteText())} target="_blank" rel="noreferrer">{Icon.wa}<span>שלח ללקוח</span></a>
         <button className="btn" onClick={async () => toast((await copyText(quoteText())) ? 'ההצעה הועתקה' : 'לא ניתן להעתיק במכשיר הזה')}>{Icon.copy}<span>העתק</span></button>
         {onRequest && <RequestBtn cfg={cfg} what={`${model.model} – ${q.label}`} onRequest={onRequest} />}
@@ -235,5 +248,119 @@ function RequestBtn({ cfg, what, onRequest }) {
     <a className="btn" href={waLink(cfg.adminPhone || '', text)} target="_blank" rel="noreferrer" onClick={() => onRequest(what)}>
       {Icon.eye}<span>בקש פירוט</span>
     </a>
+  );
+}
+
+// מנהל: הזנת מחירי חלק לדגם ולסוג תיקון – בוחרים ספק, ולכל איכות (ומסגרת) מחיר.
+// אפשר גם להדביק את התשובה של הספק כמו שהיא ("אינסל 150, אולד 250, מקורי סרוויס 1170")
+function PriceEditor({ model, repair, cfg, lists, catalog, onSaveImport, toast, onDone }) {
+  const partSups = (cfg.suppliers || []).filter((s) => s.type === 'parts');
+  const qualities = qualitiesFor(repair, cfg);
+  const label = allRepairs(cfg).find((r) => r.id === repair)?.label || repair;
+  const [sid, setSid] = useState(partSups[0]?.id || '__new');
+  const [newSup, setNewSup] = useState({ name: '', phone: '' });
+  const [reply, setReply] = useState('');
+  const [busy, setBusy] = useState(false);
+  const mine = (id) => (lists?.[id]?.items || []).filter((it) => it.kind === 'part' && it.mkey === model.mkey
+    && (catalog.parts || []).some((p) => p.supplierId === id && p.key === it.key && p.partType === repair));
+  const rowsOf = (id) => mine(id).map((it) => {
+    const r = partQuality({ ...it, supplierId: id, partType: repair }, cfg);
+    return { key: it.key, qid: r.qid || (r.note ? '?' : ''), frame: r.frame || '', price: String(it.price), note: r.note, prev: it };
+  });
+  const [rows, setRows] = useState(() => rowsOf(sid));
+  const pick = (id) => { setSid(id); setRows(id === '__new' ? [] : rowsOf(id)); };
+  const blank = () => ({ key: null, qid: qualities[0]?.id || '', frame: '', price: '', note: '', prev: null });
+  const shown = rows.length ? rows : [blank()];
+  const set = (i, patch) => setRows(shown.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+
+  const fromReply = () => {
+    const found = parseReply(reply, repair, cfg, { extractPrice, splitMulti });
+    if (!found.length) { toast('לא נמצאו מחירים בטקסט'); return; }
+    const next = rows.filter((r) => r.price !== '' || r.key);
+    for (const f of found) {
+      const qid = f.qid || (f.note ? '?' : '');
+      const at = next.findIndex((r) => r.qid === qid && (r.frame || '') === (f.frame || '') && (qid !== '?' || r.note === f.note));
+      const row = { qid, frame: f.frame || '', price: String(f.price), note: f.note };
+      if (at >= 0) next[at] = { ...next[at], ...row }; else next.push({ key: null, prev: null, ...row });
+    }
+    setRows(next);
+    setReply('');
+    const unknown = found.filter((f) => !f.qid).length;
+    toast(`נמצאו ${found.length} מחירים${unknown ? ` · ${unknown} בלי איכות מוכרת – בחר איכות` : ''}`);
+  };
+
+  const save = async () => {
+    const isNew = sid === '__new';
+    if (isNew && !newSup.name.trim()) { toast('חסר שם ספק'); return; }
+    const filled = shown.filter((r) => String(r.price).trim() !== '');
+    if (filled.some((r) => !(Number(r.price) > 0))) { toast('מחיר לא תקין'); return; }
+    if (filled.some((r) => r.qid === '?' && !r.prev)) { toast('בחר איכות לכל שורה'); return; }
+    const seen = new Set();
+    for (const r of filled) { const k = `${r.qid}|${r.frame}|${r.qid === '?' ? r.note : ''}`; if (seen.has(k)) { toast('אותה איכות מופיעה פעמיים'); return; } seen.add(k); }
+    const id = isNew ? 's' + Date.now().toString(36) : sid;
+    const supplier = isNew ? { id, name: newSup.name.trim(), type: 'parts', phone: newSup.phone.trim() } : partSups.find((s) => s.id === sid);
+    const now = Date.now();
+    const old = isNew ? [] : (lists?.[id]?.items || []);
+    const replaced = new Set(isNew ? [] : mine(id).map((it) => it.key)); // כל מה שהיה לספק לתיקון הזה בדגם – מוחלף במה שבטופס
+    const made = filled.map((r) => manualPart({
+      model, repair, qid: r.qid === '?' ? '' : r.qid, frame: r.frame || null, price: Number(r.price), cfg, now,
+      variant: r.qid === '?' ? r.prev?.variant ?? r.note : null, prev: r.prev,
+    }));
+    const keep = old.filter((it) => !replaced.has(it.key));
+    const keys = new Set(keep.map((it) => it.key));
+    for (const it of made) { let k = it.key, n = 1; while (keys.has(k)) k = `${it.key}#${++n}`; it.key = k; keys.add(k); }
+    setBusy(true);
+    try {
+      await onSaveImport({
+        lists: { [id]: { items: [...keep, ...made], supplierName: supplier.name, updatedAt: lists?.[id]?.updatedAt || now } },
+        config: isNew ? { ...cfg, suppliers: [...(cfg.suppliers || []), supplier] } : null,
+      });
+      toast(`נשמר: ${label} ל-${model.model} אצל ${supplier.name}`);
+      onDone();
+    } catch (e) { toast('השמירה נכשלה: ' + (e?.message || e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="pe">
+      <div className="t1" style={{ fontWeight: 700 }}>עדכון מחיר חלק · {label}</div>
+      <label className="field"><span>ספק</span>
+        <select className="input" value={sid} onChange={(e) => pick(e.target.value)}>
+          {partSups.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          <option value="__new">+ ספק חדש</option>
+        </select></label>
+      {sid === '__new' && (
+        <div className="pe-new">
+          <input className="input" placeholder="שם הספק" value={newSup.name} onChange={(e) => setNewSup({ ...newSup, name: e.target.value })} />
+          <input className="input" placeholder="וואטסאפ (לא חובה)" inputMode="tel" value={newSup.phone} onChange={(e) => setNewSup({ ...newSup, phone: e.target.value })} />
+        </div>
+      )}
+      <label className="field"><span>תשובת הספק (לא חובה)</span>
+        <textarea className="input" dir="auto" rows={2} placeholder="אינסל 150, אולד 250, מקורי סרוויס 1170" value={reply} onChange={(e) => setReply(e.target.value)} /></label>
+      {reply.trim() && <button className="btn" onClick={fromReply}>מלא מהתשובה</button>}
+      <div className="pe-rows">
+        {shown.map((r, i) => (
+          <div key={i} className="pe-row">
+            <select className="input" aria-label="איכות" value={r.qid} onChange={(e) => set(i, { qid: e.target.value })}>
+              {r.qid === '?' && <option value="?">{r.note || 'לא מוכר'} (כמו אצל הספק)</option>}
+              {qualities.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+              <option value="">סטנדרטי</option>
+            </select>
+            <select className="input" aria-label="מסגרת" value={r.frame} onChange={(e) => set(i, { frame: e.target.value })}>
+              <option value="">מסגרת: לא צוין</option>
+              <option value="with">{FRAME.with}</option>
+              <option value="without">{FRAME.without}</option>
+            </select>
+            <input className="input num" aria-label="מחיר" inputMode="numeric" placeholder="₪" value={r.price} onChange={(e) => set(i, { price: e.target.value.replace(/[^\d.]/g, '') })} />
+            <button className="icon-btn" aria-label="הסר" onClick={() => setRows(shown.filter((_, j) => j !== i))}>{Icon.trash}</button>
+          </div>
+        ))}
+      </div>
+      <button className="disc" style={{ margin: '4px 0' }} onClick={() => setRows([...shown, blank()])}>+ עוד איכות</button>
+      <div className="actions">
+        <button className="btn primary" disabled={busy} onClick={save}>{busy ? 'שומר…' : 'שמור'}</button>
+        <button className="btn" onClick={onDone}>ביטול</button>
+      </div>
+    </div>
   );
 }

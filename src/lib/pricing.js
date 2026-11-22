@@ -1,5 +1,6 @@
 // מנוע תמחור: חלק + עבודה לתיקונים, עלות + אחוז רווח למכשירים, עיגול לכפולות של 10
-import { LABOR_GROUPS, REPAIRS } from './defaults.js';
+import { LABOR_GROUPS } from './defaults.js';
+import { resolveQuality, optionName, groupId, optionKey, repairLabel, qualitiesFor } from './repairs.js';
 import { tokenize } from './normalize.js';
 
 export function roundPrice(v, cfg) {
@@ -59,39 +60,56 @@ export function freshness(ts, cfg, now = Date.now()) {
   return { level: days <= f.green ? 'green' : days <= f.orange ? 'orange' : 'red', days };
 }
 
+/** האיכות של פריט חלק (עם ברירת המחדל של הספק לשורות בלי שם איכות) */
+export function partQuality(p, cfg) {
+  const def = (cfg?.suppliers || []).find((x) => x.id === p.supplierId)?.defaultQuality || '';
+  return resolveQuality(p.partType, p.variant, cfg, def);
+}
+
 /**
- * הצעת מחיר לתיקון: לכל רמת איכות – החלק הזול ביותר מכל הספקים
- * parts: כל פריטי החלקים של כל הספקים (עם supplierId)
+ * הצעת מחיר לתיקון: לכל איכות (+ מסגרת) – החלק הזול ביותר מכל הספקים, ועוד עבודה ותוספות
+ * parts: פריטי החלקים של הדגם (עם supplierId). איכויות שנכתבו אחרת אצל ספקים שונים מאוחדות לשם אחד
  */
 export function repairQuote(model, repair, parts, cfg, addonIds = []) {
-  const labor = laborFor(model, repair, cfg);
+  const relevant = parts.filter((p) => p.mkey === model.mkey && p.partType === repair);
+  let labor = laborFor(model, repair, cfg);
+  const own = !!labor;
+  // סוג תיקון שנוסף בלי עלות עבודה משלו: חלק עם מחיר מחושב עם העבודה של הסוג שהוגדר (למשל מסך חיצוני ← מסך)
+  const from = (cfg.customRepairs || []).find((r) => r.id === repair)?.laborFrom;
+  if (!labor && from && relevant.length) {
+    const l = laborFor(model, from, cfg);
+    if (l) labor = { ...l, source: `${l.source} · כמו ${repairLabel(from, cfg)} (אין עלות עבודה ל${repairLabel(repair, cfg)})` };
+  }
   const addons = (cfg.addons || []).filter((a) => addonIds.includes(a.id));
   const addonSum = addons.reduce((s, a) => s + Number(a.amount || 0), 0);
-  const relevant = parts.filter((p) => p.mkey === model.mkey && p.partType === repair);
-  const byQuality = new Map();
+  const order = qualitiesFor(repair, cfg).map((x) => x.id);
+  const groups = new Map();
   for (const p of relevant) {
-    const k = qualityKey(p.variant);
-    if (!byQuality.has(k)) byQuality.set(k, []);
-    byQuality.get(k).push(p);
+    const r = partQuality(p, cfg);
+    const gid = groupId(r);
+    if (!groups.has(gid)) groups.set(gid, { r, list: [] });
+    groups.get(gid).list.push(p);
   }
-  const options = [...byQuality.entries()].map(([qk, list]) => {
+  const options = [...groups.entries()].map(([gid, { r, list }]) => {
     list.sort((a, b) => a.price - b.price);
     const best = list[0];
-    const quality = best.variant || 'סטנדרטי';
-    const overrideKey = repairGroupKey(model.mkey, repair, best.variant);
-    const legacyKey = `${model.mkey}|${repair}|${quality}`; // מפתח ישן (לפני איחוד שמות איכות)
-    const ov = cfg.priceOverrides?.[overrideKey] ?? cfg.priceOverrides?.[legacyKey];
+    const overrideKey = optionKey(model.mkey, repair, gid);
+    // מפתחות ישנים (לפני איחוד שמות האיכות) – מחיר ידני שנקבע אז עדיין תקף
+    const legacyKeys = [...new Set(list.flatMap((p) => [repairGroupKey(model.mkey, repair, p.variant), `${model.mkey}|${repair}|${p.variant || 'סטנדרטי'}`]))];
+    let ov = cfg.priceOverrides?.[overrideKey];
+    if (ov == null || ov === '') ov = legacyKeys.map((k) => cfg.priceOverrides?.[k]).find((v) => v != null && v !== '');
     const override = ov == null || ov === '' ? null : ov;
     const computed = labor ? roundPrice(best.price + labor.amount + addonSum, cfg) : null;
     return {
-      quality, part: best, suppliers: list, overrideKey, legacyKey,
+      quality: optionName(r), qid: r.qid, frame: r.frame, gid, part: best, suppliers: list, overrideKey, legacyKeys,
       final: override != null ? Number(override) : computed,
       computed, overridden: override != null,
       profit: override != null ? Number(override) - best.price : (computed != null ? computed - best.price : null),
+      rank: r.qid ? order.indexOf(r.qid) : order.length,
     };
-  }).sort((a, b) => (a.final ?? 1e9) - (b.final ?? 1e9));
-  const laborOnly = labor ? roundPrice(labor.amount + addonSum, cfg) : null;
-  return { repair, label: REPAIRS.find((r) => r.id === repair)?.label, labor, addons, options, laborOnly };
+  }).sort((a, b) => (a.final ?? 1e9) - (b.final ?? 1e9) || a.rank - b.rank);
+  const laborOnly = labor && own ? roundPrice(labor.amount + addonSum, cfg) : null;
+  return { repair, label: repairLabel(repair, cfg), labor, addons, options, laborOnly };
 }
 
 const num = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));

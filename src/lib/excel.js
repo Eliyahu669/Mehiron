@@ -1,37 +1,45 @@
 // ייצוא וייבוא של כל המחירונים לקובץ אקסל (xlsx):
-//  • "מחירון תיקונים" – פריטי ספקי החלקים
+//  • תיקונים Apple / Samsung / Xiaomi / אחרים – שורה לכל דגם + סוג תיקון + איכות (+ מסגרת), עמודת מחיר לכל ספק חלקים
 //  • Apple / Samsung / Xiaomi / אחרים – רשימת המכשירים, בפורמט של קובץ המכשירים (שורה לכל דגם + נפח + גרסה,
 //    עמודת מחיר לכל ספק מכשירים, מחיר ללקוח ואחוז רווח)
 //
 // בכל שורה נשמרת עמודה מוסתרת עם הערכים שיוצאו ("_מקור"), ובקובץ יש גיליון מוסתר עם רשימת השורות שיוצאו.
 // כך הייבוא משנה רק את מה שבאמת שונה בקובץ – גם אם בינתיים המחירונים עודכנו מוואטסאפ – ומוחק רק שורות
 // שהיו בקובץ ונמחקו ממנו (ולא שורות שנוספו לאפליקציה אחרי הייצוא).
-import { REPAIRS } from './defaults.js';
 import { buildCatalog, activeLists } from './catalog.js';
-import { repairQuote, qualityKey, repairGroupKey } from './pricing.js';
-import { manualItem, detectPartType } from './parser.js';
-import { fmtStorage } from './normalize.js';
-import { uniqueKey } from './items.js';
+import { repairQuote, partQuality, repairGroupKey } from './pricing.js';
+import { fmtStorage, identify, modelKey } from './normalize.js';
+import {
+  allRepairs, repairLabel, qualitiesFor, resolveQuality, groupId, optionKey, optionName, FRAME, manualPart, STANDARD,
+} from './repairs.js';
 import {
   CATALOG_ID, SEGMENTS, SHEETS, sheetOf, segmentLabel, segmentFromLabel, priceIndex, rowQuote, rowKey, rowLabel,
   devKey, verKey, newRowId, parseStorage, defaultCatalog,
 } from './devices.js';
 
 export { parseStorage };
-export const SHEET_REPAIRS = 'מחירון תיקונים';
+export const SHEET_REPAIRS = 'מחירון תיקונים'; // השם של גיליון התיקונים בפורמט הישן (לפני הגיליונות לפי חברה)
+export const repairSheetName = (sheetId) => `תיקונים ${SHEETS.find((s) => s.id === sheetId)?.label || sheetId}`;
+const REPAIR_SHEETS = SHEETS.map((s) => ({ id: s.id, name: repairSheetName(s.id) }));
 const SHEET_META = '_ייצוא';
 
-const REPAIR_COLS = [
-  { key: 'supplier', header: 'ספק', width: 22 },
-  { key: 'model', header: 'דגם', width: 26 },
-  { key: 'partType', header: 'סוג חלק', width: 13 },
-  { key: 'variant', header: 'איכות', width: 26 },
-  { key: 'price', header: 'מחיר ספק', width: 11, num: true },
-  { key: 'customer', header: 'מחיר ללקוח', width: 12, num: true },
-  { key: 'updated', header: 'עודכן', width: 12, date: true },
-  { key: 'id', header: 'מזהה', width: 18 },
-  { key: 'orig', header: '_מקור', width: 10, hidden: true },
-];
+/** עמודות גיליון תיקונים – שורה לכל דגם + סוג תיקון + איכות, ועמודת מחיר לכל ספק חלקים */
+export function repairCols(cfg) {
+  return [
+    { key: 'brand', header: 'יצרן', width: 12 },
+    { key: 'model', header: 'דגם', width: 24 },
+    { key: 'year', header: 'שנת השקה', width: 10 },
+    { key: 'repair', header: 'סוג תיקון', width: 13 },
+    { key: 'quality', header: 'איכות', width: 18 },
+    { key: 'frame', header: 'מסגרת', width: 12 },
+    ...partSuppliers(cfg).map((s) => ({ key: `p:${s.id}`, header: `מחיר ספק ${s.name}`, width: 14, num: true, sup: s.id })),
+    { key: 'labor', header: 'עבודה', width: 9, num: true },
+    { key: 'customer', header: 'מחיר ללקוח', width: 12, num: true },
+    { key: 'id', header: 'מזהה', width: 18 },
+    { key: 'orig', header: '_מקור', width: 10, hidden: true },
+  ];
+}
+const partSuppliers = (cfg) => (cfg.suppliers || []).filter((s) => s.type === 'parts');
 
 /** עמודות גיליון מכשירים – כמו בקובץ המכשירים, ועמודת מחיר לכל ספק מכשירים */
 export function deviceCols(cfg) {
@@ -55,8 +63,10 @@ const devSuppliers = (cfg) => (cfg.suppliers || []).filter((s) => s.type !== 'pa
 
 // הסברים שמופיעים באקסל כשבוחרים תא בעמודה (הודעת קלט של אימות נתונים – בלי "הערות", שתוכנות אחרות שומרות בצורה שלא תמיד נקראת)
 const PROMPTS = {
-  supplier: 'בחירה מהרשימה. שם ספק שלא קיים ייצור ספק חדש.',
-  customer: 'ריק = מחיר אוטומטי. מספר = מחיר ידני ללקוח (בתיקונים – לאותו דגם ואיכות אצל כל הספקים). מחיקת המספר מחזירה לאוטומטי.',
+  customer: 'ריק = מחיר אוטומטי. מספר = מחיר ידני ללקוח. מחיקת המספר מחזירה לאוטומטי.',
+  quality: 'שם האיכות כמו בהגדרות (סוגי תיקון ואיכויות). ריק = סטנדרטי.',
+  frame: 'כולל מסגרת / ללא מסגרת. ריק = לא צוין.',
+  labor: 'לעיון בלבד. עלות העבודה נקבעת בהגדרות.',
   storage: 'למשל 128GB או 1TB. ריק = בלי נפח.',
   margin: 'ריק = לפי רמת הגימור. מספר = אחוז רווח לשורה הזו. מחיקת המספר מחזירה לרמת הגימור.',
   id: 'לא לשנות. בשורה חדשה – להשאיר ריק. מחיקת שורה מוחקת אותה מהאפליקציה.',
@@ -64,40 +74,66 @@ const PROMPTS = {
   price: 'מחיר הספק. ריק = אין מחיר מהספק הזה.',
 };
 
-export const idOf = (supplierId, key) => `${supplierId}~${key}`;
 const numOrNull = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
-const partLabel = (id) => REPAIRS.find((r) => r.id === id)?.label || id || '';
-const itemLabel = (it) => [it.name || it.model, partLabel(it.partType), it.variant].filter(Boolean).join(' · ');
 // תאריך מקומי (בלי שעה), כדי שאקסל לא יזיז אותו ביום בגלל אזור הזמן
 const excelDate = (ts) => { if (!ts) return null; const d = new Date(ts); return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())); };
 const rowsOf = (lists) => lists?.[CATALOG_ID]?.items || defaultCatalog();
 
-/** מחיר ללקוח לחלק – כמו באפליקציה (החלק הזול לאותה איכות + עבודה) */
-function partPricer(catalog, cfg) {
-  const models = new Map(catalog.models.map((m) => [m.mkey, m]));
-  const rq = new Map();
-  return (it) => {
-    const k = `${it.mkey}|${it.partType}`;
-    if (!rq.has(k)) rq.set(k, repairQuote(models.get(it.mkey) || it, it.partType, catalog.partIndex.get(k) || [], cfg));
-    return rq.get(k).options.find((o) => qualityKey(o.quality) === qualityKey(it.variant))?.final ?? null;
-  };
+// מזהה שורת תיקון: דגם + סוג תיקון + איכות ומסגרת (ה-~ מבדיל משורות מכשירים)
+export const repairRowId = (mkey, repair, gid) => `r~${mkey}|${repair}|${gid}`;
+const qualityText = (r) => (r.qid ? r.label : r.note || '');
+const groupLabel = (model, repair, r, cfg) => [model, repairLabel(repair, cfg), optionName(r)].join(' · ');
+
+/** קבוצות התיקון שיש להן מחיר מספק: לכל אחת – הדגם, האיכות, והפריטים של כל ספק */
+function repairGroups(act, cfg, rows) {
+  const cat = buildCatalog(act, rows, cfg);
+  const models = new Map(cat.models.map((m) => [m.mkey, m]));
+  const out = new Map();
+  for (const [k, parts] of cat.partIndex) {
+    const repair = k.slice(k.lastIndexOf('|') + 1);
+    for (const p of parts) {
+      const m = models.get(p.mkey);
+      if (!m) continue;
+      const r = partQuality(p, cfg);
+      const id = repairRowId(m.mkey, repair, groupId(r));
+      if (!out.has(id)) out.set(id, { id, model: m, repair, r, gid: groupId(r), bySup: new Map(), parts: [] });
+      const g = out.get(id);
+      if (!g.bySup.has(p.supplierId)) g.bySup.set(p.supplierId, []);
+      g.bySup.get(p.supplierId).push(p);
+      g.parts.push(p);
+    }
+  }
+  for (const g of out.values()) for (const list of g.bySup.values()) list.sort((a, b) => a.price - b.price);
+  return { groups: out, cat, models };
 }
 
 /** שורות הייצוא (נתונים בלבד) */
 export function exportRows(lists, cfg) {
   const act = activeLists(lists, cfg);
-  const priceOf = partPricer(buildCatalog(act), cfg);
-  const repairs = [];
-  for (const s of cfg.suppliers || []) {
-    if (s.type !== 'parts') continue;
-    for (const it of act[s.id]?.items || []) {
-      if (it.kind !== 'part') continue;
-      const customer = priceOf(it);
-      const model = it.model || it.name || '';
-      const row = { supplier: s.name, model, partType: partLabel(it.partType), variant: it.variant || '', price: it.price, customer, updated: excelDate(it.updatedAt), id: idOf(s.id, it.key) };
-      row.orig = JSON.stringify({ s: s.id, n: s.name, m: model, t: it.partType || null, q: row.variant, p: it.price, c: customer });
-      repairs.push(row);
-    }
+  const { groups, cat } = repairGroups(act, cfg, rowsOf(lists));
+  const order = new Map(allRepairs(cfg).map((r, i) => [r.id, i]));
+  const quotes = new Map();
+  const quoteOf = (g) => {
+    const k = `${g.model.mkey}|${g.repair}`;
+    if (!quotes.has(k)) quotes.set(k, repairQuote(g.model, g.repair, cat.partIndex.get(k) || [], cfg));
+    return quotes.get(k);
+  };
+  const repairs = Object.fromEntries(SHEETS.map((s) => [s.id, []]));
+  const list = [...groups.values()].sort((a, b) => (b.model.year ?? 0) - (a.model.year ?? 0)
+    || String(a.model.model).localeCompare(String(b.model.model), 'en', { numeric: true })
+    || (order.get(a.repair) ?? 99) - (order.get(b.repair) ?? 99)
+    || (a.r.qid ? qualitiesFor(a.repair, cfg).findIndex((x) => x.id === a.r.qid) : 99) - (b.r.qid ? qualitiesFor(b.repair, cfg).findIndex((x) => x.id === b.r.qid) : 99));
+  for (const g of list) {
+    const q = quoteOf(g);
+    const o = q.options.find((x) => x.gid === g.gid);
+    const row = {
+      brand: g.model.brand || '', model: g.model.model, year: numOrNull(g.model.year), repair: repairLabel(g.repair, cfg),
+      quality: qualityText(g.r), frame: g.r.frame ? FRAME[g.r.frame] : '', labor: q.labor?.amount ?? null, customer: o?.final ?? null, id: g.id,
+    };
+    const p = {}, k = {};
+    for (const [sid, items] of g.bySup) { row[`p:${sid}`] = items[0].price; p[sid] = items[0].price; k[sid] = items[0].key; }
+    row.orig = JSON.stringify({ b: row.brand, m: row.model, rp: g.repair, q: row.quality, fr: g.r.frame || '', p, k, c: row.customer });
+    repairs[g.model.sheet || sheetOf(g.model.brand)].push(row);
   }
   const prices = priceIndex(act, cfg);
   const devices = Object.fromEntries(SHEETS.map((s) => [s.id, []]));
@@ -148,14 +184,19 @@ export function buildWorkbook(ExcelJS, lists, cfg, now = Date.now()) {
     const positive = (title) => ({ type: 'decimal', operator: 'greaterThan', formulae: [0], allowBlank: true, showErrorMessage: true, errorTitle: title, error: 'מספר גדול מ-0' });
     validations({ add: (key, v) => { const r = range(key); if (r) ws.dataValidations.add(r, v); }, prompt, positive });
   };
-  add(SHEET_REPAIRS, REPAIR_COLS, data.repairs, ({ add: v, prompt, positive }) => {
-    const sup = listFormula((cfg.suppliers || []).filter((s) => s.type === 'parts').map((s) => s.name));
-    v('supplier', { ...(sup ? { type: 'list', formulae: sup } : { type: 'any' }), allowBlank: true, showErrorMessage: false, ...prompt('supplier', 'ספק') });
-    v('price', positive('מחיר ספק'));
-    v('customer', { ...positive('מחיר ללקוח'), ...prompt('customer', 'מחיר ללקוח') });
-    v('id', { type: 'any', ...prompt('id', 'מזהה') });
-    v('partType', { type: 'list', allowBlank: true, showErrorMessage: true, errorTitle: 'סוג חלק', error: 'בחר מהרשימה', formulae: listFormula(REPAIRS.map((r) => r.label)) });
-  });
+  const rcols = repairCols(cfg);
+  const qLabels = [...new Set(allRepairs(cfg).flatMap((r) => qualitiesFor(r.id, cfg).map((x) => x.label)))];
+  for (const sh of REPAIR_SHEETS) {
+    add(sh.name, rcols, data.repairs[sh.id], ({ add: v, prompt, positive }) => {
+      v('repair', { type: 'list', allowBlank: false, showErrorMessage: true, errorTitle: 'סוג תיקון', error: 'בחר מהרשימה', formulae: listFormula(allRepairs(cfg).map((r) => r.label)) });
+      v('quality', { ...(listFormula(qLabels) ? { type: 'list', formulae: listFormula(qLabels) } : { type: 'any' }), allowBlank: true, showErrorMessage: false, ...prompt('quality', 'איכות') });
+      v('frame', { type: 'list', allowBlank: true, showErrorMessage: true, errorTitle: 'מסגרת', error: 'בחר מהרשימה', formulae: listFormula(Object.values(FRAME)), ...prompt('frame', 'מסגרת') });
+      for (const c of rcols.filter((x) => x.sup)) v(c.key, { ...positive(c.header), ...prompt('price', c.header) });
+      v('labor', { type: 'any', ...prompt('labor', 'עבודה') });
+      v('customer', { ...positive('מחיר ללקוח'), ...prompt('customer', 'מחיר ללקוח') });
+      v('id', { type: 'any', ...prompt('id', 'מזהה') });
+    });
+  }
   const dcols = deviceCols(cfg);
   for (const sh of SHEETS) {
     add(sh.label, dcols, data.devices[sh.id], ({ add: v, prompt, positive }) => {
@@ -172,10 +213,10 @@ export function buildWorkbook(ExcelJS, lists, cfg, now = Date.now()) {
   const meta = wb.addWorksheet(SHEET_META);
   meta.state = 'veryHidden';
   meta.addRow(['exportedAt', now]);
-  for (const r of data.repairs) meta.addRow([r.id]);
+  for (const sh of SHEETS) for (const r of data.repairs[sh.id]) meta.addRow([r.id]);
   for (const sh of SHEETS) for (const r of data.devices[sh.id]) meta.addRow([r.id]);
-  const devCount = SHEETS.reduce((n, sh) => n + data.devices[sh.id].length, 0);
-  return { wb, counts: { repairs: data.repairs.length, devices: devCount } };
+  const count = (o) => SHEETS.reduce((n, sh) => n + o[sh.id].length, 0);
+  return { wb, counts: { repairs: count(data.repairs), devices: count(data.devices) } };
 }
 
 export function exportFileName(now = Date.now()) {
@@ -266,40 +307,20 @@ export function readWorkbook(wb, cfg) {
     manifest = { ids, exportedAt };
   }
   const visible = wb.worksheets.filter((ws) => ws.name !== SHEET_META);
-  const repWs = visible.find((ws) => /תיקונ|מחירות/.test(ws.name));
-  const dcols = deviceCols(cfg);
-  const devices = [];
+  const dcols = deviceCols(cfg), rcols = repairCols(cfg);
+  const devices = [], repairs = [];
+  let oldRepairs = false;
   for (const ws of visible) {
-    if (ws === repWs) continue;
     const heads = [];
     ws.getRow(1).eachCell((cell) => heads.push(str(cellValue(cell.value))));
-    if (!heads.includes('שם הדגם')) continue; // לא גיליון מכשירים
-    devices.push(readSheet(ws, dcols, ['model', 'segment'], !!manifest));
+    if (heads.includes('סוג תיקון')) repairs.push(readSheet(ws, rcols, ['model', 'repair'], !!manifest));
+    else if (heads.includes('שם הדגם')) devices.push(readSheet(ws, dcols, ['model', 'segment'], !!manifest));
+    else if (heads.includes('סוג חלק') && heads.includes('ספק')) oldRepairs = true; // גיליון תיקונים בפורמט הקודם
   }
-  return {
-    repairs: repWs ? readSheet(repWs, REPAIR_COLS, ['model', 'price'], !!manifest) : null,
-    devices,
-    manifest,
-  };
+  return { repairs, devices, manifest, oldRepairs };
 }
 
 // ---------- תכנון הייבוא (בלי לשמור) ----------
-
-const normName = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-const partFromCell = (v) => {
-  const s = str(v);
-  if (!s) return null;
-  return REPAIRS.find((x) => x.label === s || x.id === s)?.id || detectPartType(s);
-};
-
-// כל המפתחות של "מחיר ידני ללקוח" שחלים על אותה קבוצת תיקון (כולל מפתחות בפורמט ישן)
-function repairOverrideKeys(po, item) {
-  const out = [];
-  const pre = `${item.mkey}|${item.partType}|`;
-  const qk = qualityKey(item.variant);
-  for (const k of Object.keys(po)) if (k.startsWith(pre) && qualityKey(k.slice(pre.length)) === qk) out.push(k);
-  return out;
-}
 
 /**
  * משווה את הקובץ למצב הנוכחי ומחזיר מה ישתנה. לא שומר כלום.
@@ -317,10 +338,10 @@ export function planImport(book, lists, cfg, now = Date.now()) {
     ov: { set: 0, cleared: 0 }, mg: { set: 0, cleared: 0 },
     exportedIds: book.manifest?.ids || null,
     // כל המזהים שבקובץ, מכל הגיליונות – שורה שהועברה לגיליון אחר לא נמחקת
-    inFile: new Set([...(book.repairs?.rows || []), ...(book.devices || []).flatMap((s) => s.rows || [])].map((r) => str(r.id)).filter(Boolean)),
+    inFile: new Set([...(book.repairs || []), ...(book.devices || [])].flatMap((s) => s.rows || []).map((r) => str(r.id)).filter(Boolean)),
   };
   ctx.listOf = (id) => (ctx.work[id] ||= [...(ctx.act[id]?.items || [])]);
-  planRepairs(book.repairs, ctx);
+  planRepairs(book.repairs || [], ctx, book.oldRepairs);
   planDevices(book.devices || [], ctx);
   const { n, notes } = ctx;
   if (n.gone) notes.push(`${n.gone} שורות דולגו – הן כבר לא קיימות באפליקציה (נמחקו או הוחלפו מאז הייצוא) ולא שונו בקובץ`);
@@ -349,174 +370,214 @@ export function planImport(book, lists, cfg, now = Date.now()) {
   };
 }
 
-// ----- מחירון תיקונים -----
-function planRepairs(sheet, ctx) {
-  const { act, cfg, now, suppliers, det, n, invalid, notes, conflicts } = ctx;
-  const sheetName = SHEET_REPAIRS;
-  if (!sheet) { notes.push(`הגיליון "${sheetName}" לא נמצא בקובץ – פריטי התיקונים לא שונו`); return; }
-  if (sheet.error) { invalid.push({ sheet: sheetName, row: 1, reason: sheet.error }); return; }
-  const supById = new Map(suppliers.map((s) => [s.id, s]));
-  const findSup = (name) => {
-    const all = suppliers.filter((s) => normName(s.name) === normName(name));
-    return all.find((s) => s.type === 'parts') || all[0] || null;
-  };
-  const priceOf = partPricer(buildCatalog(act), cfg);
-  const existing = new Map(); // מזהה → { s, it }
-  for (const s of suppliers) for (const it of act[s.id]?.items || []) if (it.kind === 'part') existing.set(idOf(s.id, it.key), { s, it });
+// ----- מחירון תיקונים (גיליון לכל חברה) -----
+const frameFromCell = (v) => {
+  const s = str(v);
+  if (!s) return '';
+  if (/ללא|בלי|without|no/i.test(s)) return 'without';
+  if (/כולל|עם|with|מסגרת|frame/i.test(s)) return 'with';
+  return null;
+};
+const repairFromCell = (v, cfg) => {
+  const s = str(v);
+  if (!s) return null;
+  const all = allRepairs(cfg);
+  return all.find((x) => x.label === s || x.id === s)?.id || null;
+};
+/** איכות מהתא: שם מהרשימה (או מילה של ספק שמתורגמת אליו), אחרת טקסט חופשי */
+const qualityFromCell = (v, repair, cfg) => {
+  const s = str(v);
+  if (!s || s === STANDARD) return { qid: '', note: '' };
+  const x = qualitiesFor(repair, cfg).find((q) => q.label === s);
+  if (x) return { qid: x.id, note: '' };
+  const r = resolveQuality(repair, s, cfg);
+  return r.qid && !r.note ? { qid: r.qid, note: '' } : { qid: '', note: s };
+};
+
+function planRepairs(sheets, ctx, oldFormat) {
+  const { act, cfg, now, det, n, invalid, notes, conflicts, lists } = ctx;
+  if (oldFormat) notes.push(`הגיליון "${SHEET_REPAIRS}" בפורמט הקודם לא יובא. כדי לערוך תיקונים באקסל – ייצא קובץ חדש`);
+  if (!sheets.length) { if (!oldFormat) notes.push('לא נמצאו בקובץ גיליונות תיקונים – מחירון התיקונים לא שונה'); return; }
+  const good = sheets.filter((s) => !s.error);
+  for (const s of sheets) if (s.error) invalid.push({ sheet: s.name || 'תיקונים', row: 1, reason: s.error });
+  if (!good.length) return;
+  for (const s of good) for (const h of s.extraPriceCols) notes.push(`העמודה "${h}" בגיליון "${s.name}" לא שייכת לאף ספק חלקים באפליקציה – לא נקראה`);
+
+  const sups = partSuppliers(cfg);
+  const { groups, models } = repairGroups(act, cfg, rowsOf(lists));
   const seen = new Set();
   const entries = [];
+  // דגם מהתא: דגם שקיים במחירון, או שם שמזוהה (יצרן / סדרה)
+  const modelFrom = (brand, name) => {
+    const id = identify(name, brand || null);
+    const mkey = modelKey(id);
+    const m = models.get(mkey);
+    if (m) return m;
+    if (!id.family && !id.brand) return null;
+    return { mkey, brand: id.brand || brand || null, model: id.model, family: id.family, tier: id.tier, devKind: id.kind === 'other' ? 'phone' : id.kind };
+  };
 
-  for (const r of sheet.rows) {
-    const bad = (reason) => invalid.push({ sheet: sheetName, row: r.row, reason, name: str(r.model) });
-    const id = str(r.id);
-    if (id) seen.add(id);
-    const known = id ? existing.get(id) || null : null;
-    let orig = null;
-    try { const o = r.orig ? JSON.parse(String(r.orig)) : null; if (o && typeof o === 'object' && o.s) orig = o; } catch { orig = null; }
-    const supCell = str(r.supplier);
-    if (!supCell) { bad('חסר ספק'); continue; }
-    const model = str(r.model);
-    if (!model) { bad('חסר דגם'); continue; }
-    const price = parseNum(r.price);
-    if (price == null || Number.isNaN(price) || price <= 0) { bad(`מחיר ספק חסר או לא תקין${str(r.price) ? `: "${str(r.price)}"` : ''}`); continue; }
-    const variant = str(r.variant);
-    const partType = partFromCell(r.partType);
-    if (!partType) { bad(str(r.partType) ? `סוג חלק לא מוכר: "${str(r.partType)}"` : 'חסר סוג חלק'); continue; }
-    const customer = parseNum(r.customer);
-    if (Number.isNaN(customer) || (customer != null && customer <= 0)) { bad(`מחיר ללקוח לא תקין: "${str(r.customer)}"`); continue; }
-
-    // הערכים שיוצאו (מהעמודה המוסתרת; אם חסרה – הערכים הנוכחיים של הפריט)
-    const base = orig
-      ? { s: orig.s, n: orig.n ?? supById.get(orig.s)?.name ?? '', m: str(orig.m), t: orig.t || null, q: str(orig.q), p: Number(orig.p), c: orig.c ?? null }
-      : known ? { s: known.s.id, n: known.s.name, m: str(known.it.model || known.it.name), t: known.it.partType || null, q: str(known.it.variant), p: known.it.price, c: priceOf(known.it) } : null;
-    // ספק: אם השם לא שונה בקובץ – אותו ספק (גם אם בינתיים שמו שונה באפליקציה)
-    const sameName = !!base && normName(supCell) === normName(base.n);
-    const sup = sameName && supById.has(base.s) ? supById.get(base.s) : findSup(supCell);
-    const ch = base && {
-      supplier: !sameName && (!sup || sup.id !== base.s),
-      model: base.m !== model,
-      partType: base.t !== partType,
-      variant: base.q !== variant,
-      price: !(Math.abs(base.p - price) < 0.005),
-      customer: base.c == null ? customer != null : customer == null || Math.round(customer) !== Math.round(base.c),
-    };
-    entries.push({ r, id, known, sup, supCell, ch, changed: !!ch && Object.values(ch).some(Boolean), v: { model, price, variant, partType, customer }, bad });
+  for (const sh of good) {
+    for (const r of sh.rows) {
+      const bad = (reason) => invalid.push({ sheet: sh.name, row: r.row, reason, name: str(r.model) });
+      const id = str(r.id);
+      if (id && !id.startsWith('r~')) { bad('זו שורה של מכשיר – מקומה בגיליון של החברה ברשימת המכשירים'); continue; }
+      const dupId = id && seen.has(id);
+      if (id) seen.add(id);
+      let orig = null;
+      try { const o = r.orig ? JSON.parse(String(r.orig)) : null; if (o && typeof o === 'object' && 'rp' in o) orig = o; } catch { orig = null; }
+      const name = str(r.model);
+      if (!name) { bad('חסר דגם'); continue; }
+      const repair = repairFromCell(r.repair, cfg);
+      if (!repair) { bad(str(r.repair) ? `סוג תיקון לא מוכר: "${str(r.repair)}"` : 'חסר סוג תיקון'); continue; }
+      const frame = frameFromCell(r.frame);
+      if (frame == null) { bad(`מסגרת לא מוכרת: "${str(r.frame)}" (כולל מסגרת / ללא מסגרת / ריק)`); continue; }
+      const p = {};
+      let badPrice = null;
+      for (const s of sups) {
+        if (!sh.cols[`p:${s.id}`]) continue; // אין עמודה לספק הזה בקובץ (למשל שמו שונה אחרי הייצוא) – לא נוגעים במחירים שלו
+        const v = parseNum(r[`p:${s.id}`]);
+        if (Number.isNaN(v) || (v != null && v <= 0)) { badPrice = `מחיר ספק ${s.name} לא תקין: "${str(r[`p:${s.id}`])}"`; break; }
+        p[s.id] = v;
+      }
+      if (badPrice) { bad(badPrice); continue; }
+      const customer = parseNum(r.customer);
+      if (Number.isNaN(customer) || (customer != null && customer <= 0)) { bad(`מחיר ללקוח לא תקין: "${str(r.customer)}"`); continue; }
+      const known = id && !dupId ? groups.get(id) || null : null;
+      const q = qualityFromCell(r.quality, repair, cfg);
+      entries.push({ r, sh, id, known, orig, name, brand: str(r.brand), repair, q, frame, p, customer, bad });
+    }
   }
 
-  // שורה שהועתקה (אותו מזהה פעמיים): הפריט הקיים נשאר לשורה שלא שונתה, והשורה ששונתה נוספת כפריט חדש
-  const owner = new Map();
-  for (const e of entries) if (e.known && !e.changed && !owner.has(e.id)) owner.set(e.id, e);
-  for (const e of entries) if (e.known && !owner.has(e.id)) owner.set(e.id, e);
   const ovSet = new Map(), ovClear = new Map();
+  const listOf = (sid) => { ctx.touched.add(sid); return ctx.listOf(sid); };
+  const removeItem = (sid, it) => { const arr = listOf(sid); const i = arr.findIndex((x) => x.key === it.key); if (i >= 0) arr.splice(i, 1); };
+  const putItem = (sid, it, replaceKey = null) => {
+    const arr = listOf(sid);
+    if (replaceKey) { const i = arr.findIndex((x) => x.key === replaceKey); if (i >= 0) arr.splice(i, 1); }
+    const taken = new Set(arr.map((x) => x.key));
+    let k = it.key, c = 1;
+    while (taken.has(k)) k = `${it.key}#${++c}`;
+    arr.push({ ...it, key: k });
+  };
+  const curPrice = (g, sid) => g?.bySup.get(sid)?.[0]?.price ?? null;
 
   for (const e of entries) {
-    const { r, ch, v } = e;
-    const ex = e.known && owner.get(e.id) === e ? e.known : null;
-    if (!ex && ch && !e.changed) { if (e.known) n.dup++; else n.gone++; continue; }
-    let sup = e.sup || findSup(e.supCell);
-    if (sup && sup.type !== 'parts' && (!ex || ch.supplier)) { e.bad(`"${sup.name}" מוגדר כספק מכשירים`); continue; }
-    if (!sup) {
-      sup = { id: `s${now.toString(36)}${ctx.newSuppliers.length}`, name: e.supCell, type: 'parts', phone: '' };
-      suppliers.push(sup); supById.set(sup.id, sup); ctx.newSuppliers.push(e.supCell);
+    const { r, known: g, orig } = e;
+    const model = modelFrom(e.brand, e.name);
+    if (!model) { e.bad(`דגם לא מזוהה: "${e.name}"`); continue; }
+    const r2 = { qid: e.q.qid, label: '', frame: e.frame || null, note: e.q.qid ? '' : e.q.note };
+    const target = { model, repair: e.repair, qid: e.q.qid, frame: e.frame || null, note: r2.note, gid: groupId(r2) };
+    const targetId = repairRowId(model.mkey, e.repair, target.gid);
+    const label = [model.model, repairLabel(e.repair, cfg), optionName({ ...r2, label: e.q.qid ? qualitiesFor(e.repair, cfg).find((x) => x.id === e.q.qid)?.label : '' })].join(' · ');
+    const variantFor = (prevVariant) => (target.qid || !target.note ? null : prevVariant ?? target.note);
+
+    if (g) {
+      // שורה קיימת: מה השתנה בקובץ לעומת מה שיוצא (שדות שלא שונו בקובץ נשארים כמו באפליקציה)
+      const base = orig || { m: g.model.model, rp: g.repair, q: qualityText(g.r), fr: g.r.frame || '', p: Object.fromEntries([...g.bySup].map(([sid, l]) => [sid, l[0].price])), c: repairQuote(g.model, g.repair, g.parts, cfg).options[0]?.final ?? null };
+      const moved = str(base.m) !== e.name || base.rp !== e.repair || str(base.q) !== str(r.quality) || (base.fr || '') !== (e.frame || '');
+      let changed = false, priceChanged = 0;
+      if (moved && targetId !== g.id) {
+        if (groups.has(targetId)) { e.bad(`כבר קיימת שורה ל-${label}`); continue; }
+        for (const [sid, items] of g.bySup) {
+          for (const it of items) {
+            const fresh = manualPart({ model, repair: e.repair, qid: target.qid, frame: target.frame, price: it.price, cfg, now, prev: it, variant: variantFor(null) });
+            putItem(sid, { ...fresh, updatedAt: it.updatedAt, changedAt: it.changedAt, prevPrice: it.prevPrice ?? null }, it.key);
+          }
+        }
+        changed = true;
+      }
+      for (const s of sups) {
+        if (!(s.id in e.p)) continue;
+        const was = base.p?.[s.id] ?? null, now_ = e.p[s.id];
+        if ((was ?? null) === (now_ ?? null) || (was != null && now_ != null && Math.abs(was - now_) < 0.005)) continue;
+        const items = g.bySup.get(s.id) || [];
+        if (now_ == null) { for (const it of items) removeItem(s.id, it); }
+        else if (items.length) {
+          const it = items[0];
+          if (Math.abs(it.price - now_) < 0.005) continue;
+          const tgt = moved && targetId !== g.id ? { model, repair: e.repair, qid: target.qid, frame: target.frame, variant: variantFor(null) } : { model: g.model, repair: g.repair, qid: g.r.qid, frame: g.r.frame, variant: it.variant };
+          putItem(s.id, manualPart({ ...tgt, price: now_, cfg, now, prev: it }), it.key);
+        } else {
+          const tgt = moved && targetId !== g.id ? { model, repair: e.repair, qid: target.qid, frame: target.frame, variant: variantFor(null) } : { model: g.model, repair: g.repair, qid: g.r.qid, frame: g.r.frame, variant: g.r.qid ? null : (g.parts[0]?.variant ?? null) };
+          putItem(s.id, manualPart({ ...tgt, price: now_, cfg, now }));
+        }
+        changed = true; priceChanged++;
+      }
+      if (changed) {
+        n.updated++; n.priceChanged += priceChanged ? 1 : 0;
+        det.updated.push({ sheet: e.sh.name, row: r.row, name: label, what: [moved && targetId !== g.id && 'דגם/תיקון/איכות', priceChanged && 'מחיר ספק'].filter(Boolean) });
+      }
+      const custChanged = base.c == null ? e.customer != null : e.customer == null || Math.round(e.customer) !== Math.round(base.c);
+      if (custChanged) {
+        const okey = optionKey(model.mkey, e.repair, target.gid);
+        const old = [optionKey(g.model.mkey, g.repair, g.gid), ...new Set(g.parts.flatMap((x) => [repairGroupKey(g.model.mkey, g.repair, x.variant), `${g.model.mkey}|${g.repair}|${x.variant || 'סטנדרטי'}`]))];
+        if (e.customer != null) ovSet.set(okey, { value: Math.round(e.customer), row: r.row, sheet: e.sh.name, label, old });
+        else ovClear.set(okey, { label, old });
+      } else if (moved && targetId !== g.id) {
+        // מחיר ידני שהיה לשורה עובר איתה
+        const from = optionKey(g.model.mkey, g.repair, g.gid);
+        if (ctx.po[from] != null) { ctx.po[optionKey(model.mkey, e.repair, target.gid)] = ctx.po[from]; delete ctx.po[from]; ctx.ov.set++; }
+      }
+      continue;
     }
-    let item;
-    if (ex) {
-      // עדכון פריט קיים – רק שדות ששונו בקובץ ושעדיין שונים ממה שיש באפליקציה
-      const cur = ex.it;
-      const eff = {
-        model: ch.model && v.model !== str(cur.model || cur.name),
-        partType: ch.partType && v.partType !== cur.partType,
-        variant: ch.variant && v.variant !== str(cur.variant),
-        price: ch.price && Math.abs(v.price - cur.price) >= 0.005,
-        supplier: ch.supplier && sup.id !== ex.s.id,
-      };
-      item = cur;
-      if (eff.model || eff.partType || eff.variant) {
-        const f = { name: eff.model ? v.model : cur.model || cur.name, partType: eff.partType ? v.partType : cur.partType, variant: eff.variant ? v.variant : cur.variant || '', price: eff.price ? v.price : cur.price };
-        const { ok, ...rec } = manualItem(f, 'parts', cur, now);
-        item = rec;
-        if (!eff.price) Object.assign(item, { updatedAt: cur.updatedAt, changedAt: cur.changedAt, prevPrice: cur.prevPrice ?? null });
-      } else if (eff.price) {
-        item = { ...cur, manual: true, price: v.price, prevPrice: cur.price, changedAt: now, updatedAt: now };
-      }
-      const from = ctx.listOf(ex.s.id);
-      const i = from.indexOf(cur);
-      if (eff.supplier) {
-        if (i >= 0) from.splice(i, 1);
-        const to = ctx.listOf(sup.id);
-        item = { ...item, key: uniqueKey(to, item.key) };
-        to.push(item);
-        ctx.touched.add(ex.s.id); ctx.touched.add(sup.id);
-      } else if (item !== cur) {
-        item = { ...item, key: uniqueKey(from, item.key, i) };
-        if (i >= 0) from[i] = item; else from.push(item);
-        ctx.touched.add(ex.s.id);
-      }
-      if (item !== cur) {
-        n.updated++; if (eff.price) n.priceChanged++;
-        const what = [eff.price && 'מחיר', eff.model && 'שם', eff.partType && 'סוג חלק', eff.variant && 'איכות', eff.supplier && `ספק (${sup.name})`].filter(Boolean);
-        det.updated.push({ sheet: sheetName, row: r.row, name: itemLabel(item), before: cur.price, after: item.price, what });
-      }
-    } else {
-      // פריט חדש: שורה בלי מזהה, שורה מועתקת ששונתה, או פריט שכבר לא קיים באפליקציה ושונה בקובץ
-      const { ok, ...rec } = manualItem({ name: v.model, partType: v.partType, variant: v.variant, price: v.price }, 'parts', null, now);
-      if (!ok) { e.bad('לא ניתן ליצור פריט מהשורה'); continue; }
-      const to = ctx.listOf(sup.id);
-      const same = to.find((x) => x.key.replace(/#\d+$/, '') === rec.key && Math.abs(x.price - rec.price) < 0.005);
-      if (same) { seen.add(idOf(sup.id, same.key)); n.exists++; item = same; }
-      else {
-        item = { ...rec, key: uniqueKey(to, rec.key) };
-        to.push(item);
-        ctx.touched.add(sup.id);
-        n.added++;
-        det.added.push({ sheet: sheetName, row: r.row, name: itemLabel(item), price: item.price, supplier: sup.name });
-      }
+
+    // שורה חדשה (בלי מזהה, או מזהה שכבר לא קיים / שורה מועתקת)
+    const existing = groups.get(targetId);
+    if (existing) seen.add(targetId); // שורה שנכתבה מחדש (בלי מזהה) לקבוצה קיימת – הקבוצה לא נמחקת
+    const priced = sups.filter((s) => e.p[s.id] != null);
+    if (!priced.length && !existing) { if (e.id && orig) { n.gone++; continue; } e.bad('אין מחיר ספק בשורה'); continue; }
+    if (e.id && orig && !existing) { // שורה שכבר לא קיימת באפליקציה: מוסיפים רק אם שונתה בקובץ
+      const same = sups.every((s) => (orig.p?.[s.id] ?? null) === (e.p[s.id] ?? null)) && str(orig.m) === e.name && orig.rp === e.repair && str(orig.q) === str(r.quality);
+      if (same) { n.gone++; continue; }
     }
-    // מחיר ידני ללקוח – לכל הקבוצה (אותו דגם ואיכות אצל כל הספקים)
-    if (ch ? ch.customer : v.customer != null) {
-      const gk = repairGroupKey(item.mkey, item.partType, item.variant);
-      if (v.customer != null) {
-        const val = Math.round(v.customer);
-        const prev = ovSet.get(gk);
-        if (!prev) ovSet.set(gk, { value: val, row: r.row, item });
-        else if (prev.value !== val) conflicts.push(`${itemLabel(item)}: שני מחירים שונים ללקוח (שורות ${prev.row} ו-${r.row} ב"${sheetName}") – נקבע ${prev.value}`);
-      } else if (!ovClear.has(gk)) ovClear.set(gk, { item });
+    if (existing && e.id === targetId) { n.dup++; continue; } // אותה שורה פעמיים
+    let added = 0, upd = 0;
+    for (const s of priced) {
+      const cur = existing?.bySup.get(s.id)?.[0] || null;
+      if (cur && Math.abs(cur.price - e.p[s.id]) < 0.005) continue;
+      putItem(s.id, manualPart({ model, repair: e.repair, qid: target.qid, frame: target.frame, price: e.p[s.id], cfg, now, prev: cur, variant: variantFor(cur?.variant) }), cur?.key || null);
+      if (cur) upd++; else added++;
     }
+    if (!added && !upd) { n.exists++; }
+    else if (existing) { n.updated++; n.priceChanged++; det.updated.push({ sheet: e.sh.name, row: r.row, name: label, what: ['מחיר ספק'] }); }
+    else { n.added++; det.added.push({ sheet: e.sh.name, row: r.row, name: label, price: Math.min(...priced.map((s) => e.p[s.id])), supplier: priced.map((s) => s.name).join(', ') }); }
+    if (e.customer != null) ovSet.set(optionKey(model.mkey, e.repair, target.gid), { value: Math.round(e.customer), row: r.row, sheet: e.sh.name, label, old: [] });
   }
 
-  // מחיקות: פריטים שהיו בקובץ (לפי רשימת הייצוא) ונמחקו ממנו
-  if (!ctx.exportedIds) notes.push(`הקובץ לא נוצר בייצוא מהאפליקציה – כל פריט תיקון שלא מופיע בו יימחק`);
-  for (const s of cfg.suppliers || []) {
-    for (const it of act[s.id]?.items || []) {
-      if (it.kind !== 'part') continue;
-      const iid = idOf(s.id, it.key);
-      if (seen.has(iid) || ctx.inFile.has(iid) || (ctx.exportedIds && !ctx.exportedIds.has(iid))) continue;
-      const arr = ctx.listOf(s.id);
-      const i = arr.indexOf(it);
-      if (i < 0) continue;
-      arr.splice(i, 1);
-      ctx.touched.add(s.id);
-      n.deleted++;
-      det.deleted.push({ sheet: sheetName, name: itemLabel(it), price: it.price, supplier: s.name });
-    }
+  // מחיקות: שורות שהיו בקובץ (לפי רשימת הייצוא) ונמחקו ממנו – רק מגיליונות שנמצאים בקובץ
+  const present = new Set(good.map((s) => REPAIR_SHEETS.find((x) => x.name === s.name)?.id).filter(Boolean));
+  for (const sh of REPAIR_SHEETS) if (!present.has(sh.id) && groups.size) notes.push(`הגיליון "${sh.name}" לא נמצא בקובץ – התיקונים שלו לא נמחקו`);
+  if (!ctx.exportedIds) notes.push('הקובץ לא נוצר בייצוא מהאפליקציה – כל מחיר תיקון שלא מופיע בגיליון של החברה שלו יימחק');
+  for (const g of groups.values()) {
+    if (seen.has(g.id) || ctx.inFile.has(g.id) || !present.has(g.model.sheet || sheetOf(g.model.brand)) || (ctx.exportedIds && !ctx.exportedIds.has(g.id))) continue;
+    for (const [sid, items] of g.bySup) for (const it of items) removeItem(sid, it);
+    n.deleted++;
+    det.deleted.push({ sheet: repairSheetName(g.model.sheet || sheetOf(g.model.brand)), name: groupLabel(g.model.model, g.repair, g.r, cfg), price: Math.min(...g.parts.map((x) => x.price)), supplier: [...g.bySup.keys()].map((sid) => sups.find((s) => s.id === sid)?.name || sid).join(', ') });
+    const k = optionKey(g.model.mkey, g.repair, g.gid);
+    if (ctx.po[k] != null) { delete ctx.po[k]; ctx.ov.cleared++; }
   }
 
   const { po } = ctx;
-  for (const [gk, o] of ovSet) {
-    const old = repairOverrideKeys(po, o.item);
-    if (old.length === 1 && old[0] === gk && Number(po[gk]) === o.value) continue;
-    old.forEach((k) => delete po[k]);
-    po[gk] = o.value;
+  const seenSet = new Map();
+  for (const [k, o] of ovSet) {
+    const prev = seenSet.get(k);
+    if (prev && prev.value !== o.value) { conflicts.push(`${o.label}: שני מחירים שונים ללקוח (שורות ${prev.row} ו-${o.row}) – נקבע ${prev.value}`); continue; }
+    seenSet.set(k, o);
+    const legacy = o.old.filter((x) => x !== k && po[x] != null);
+    if (Number(po[k]) === o.value && !legacy.length) continue;
+    legacy.forEach((x) => delete po[x]);
+    po[k] = o.value;
     ctx.ov.set++;
-    det.overrides.push({ name: itemLabel(o.item), value: o.value });
+    det.overrides.push({ name: o.label, value: o.value });
   }
-  for (const [gk, o] of ovClear) {
-    if (ovSet.has(gk)) continue;
-    const old = repairOverrideKeys(po, o.item);
+  for (const [k, o] of ovClear) {
+    if (ovSet.has(k)) continue;
+    const old = [k, ...o.old].filter((x) => po[x] != null);
     if (!old.length) continue;
-    old.forEach((k) => delete po[k]);
+    old.forEach((x) => delete po[x]);
     ctx.ov.cleared++;
-    det.overrides.push({ name: itemLabel(o.item), value: null });
+    det.overrides.push({ name: o.label, value: null });
   }
 }
 
@@ -543,7 +604,7 @@ function planDevices(sheets, ctx) {
       const bad = (reason) => invalid.push({ sheet: sh.name, row: r.row, reason, name: str(r.model) });
       const id = str(r.id);
       if (id) seen.add(id);
-      if (id.includes('~')) { bad(`זו שורה של תיקון – מקומה בגיליון "${SHEET_REPAIRS}"`); continue; }
+      if (id.includes('~')) { bad('זו שורה של תיקון – מקומה בגיליון "תיקונים" של החברה'); continue; }
       const known = id ? byId.get(id) || null : null;
       let orig = null;
       try { const o = r.orig ? JSON.parse(String(r.orig)) : null; if (o && typeof o === 'object' && 'm' in o) orig = o; } catch { orig = null; }
