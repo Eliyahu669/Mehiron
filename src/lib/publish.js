@@ -1,7 +1,7 @@
 // קטלוג "מחירים סופיים בלבד" לעובדים: בלי מחירי ספק, בלי שמות ספקים ובלי אחוזי רווח
 import { buildCatalog, activeLists } from './catalog.js';
 import { repairQuote, laborFor, roundPrice } from './pricing.js';
-import { REPAIRS } from './defaults.js';
+import { allRepairs, repairLabel } from './repairs.js';
 import { searchTokens } from './normalize.js';
 import { CATALOG_ID, defaultCatalog, priceIndex, rowQuote, buildDeviceModels, sheetOf } from './devices.js';
 
@@ -12,7 +12,7 @@ export const catalogRows = (lists) => lists?.[CATALOG_ID]?.items || defaultCatal
 export function buildFullCatalog(allLists, cfg) {
   const lists = activeLists(allLists, cfg);
   const rows = catalogRows(allLists);
-  const cat = buildCatalog(lists, rows);
+  const cat = buildCatalog(lists, rows, cfg);
   const prices = priceIndex(lists, cfg);
   return { ...cat, lite: false, rows, prices, devModels: buildDeviceModels(rows, prices) };
 }
@@ -26,6 +26,7 @@ export function publicConfig(cfg) {
     rounding: cfg.rounding,
     freshness: cfg.freshness,
     adminPhone: cfg.adminPhone || '',
+    customRepairs: (cfg.customRepairs || []).map(({ id, label, words, laborFrom }) => ({ id, label, words: words || [], laborFrom: laborFrom || null })),
   };
 }
 
@@ -34,13 +35,13 @@ export function buildPublicCatalog(allLists, cfg) {
   const cat = buildFullCatalog(allLists, cfg);
   const models = cat.models.map((m) => {
     const r = {};
-    for (const rep of REPAIRS) {
+    for (const rep of allRepairs(cfg)) {
       const q = repairQuote(m, rep.id, cat.partIndex.get(`${m.mkey}|${rep.id}`) || [], cfg);
       const o = q.options.filter((x) => x.final != null).map((x) => ({ q: x.quality, f: x.final, u: x.part.updatedAt || null }));
       if (o.length) r[rep.id] = { o };
       else if (q.laborOnly != null) r[rep.id] = { o: [], l: q.laborOnly };
     }
-    return { k: m.mkey, b: m.brand || null, m: m.model, fa: m.family || null, t: m.tier || null, dk: m.devKind || null, hp: m.hasParts, r };
+    return { k: m.mkey, b: m.brand || null, m: m.model, fa: m.family || null, t: m.tier || null, dk: m.devKind || null, hp: m.hasParts, y: m.year ?? null, se: m.series || '', r };
   }).filter((m) => m.hp || Object.keys(m.r).length); // דגם מהרשימה שאין לו אף מחיר תיקון – לא נשלח
   // מכשירים למכירה: רק מחיר סופי לכל נפח / גרסה
   const devices = cat.devModels.map((g) => {
@@ -55,7 +56,7 @@ export function buildPublicCatalog(allLists, cfg) {
 /** הופך את הקטלוג המפורסם למבנה שהממשק והחיפוש מכירים */
 export function liteCatalog(pub) {
   const models = (pub?.models || []).map((x) => ({
-    mkey: x.k, brand: x.b, model: x.m, family: x.fa, tier: x.t, devKind: x.dk,
+    mkey: x.k, brand: x.b, model: x.m, family: x.fa, tier: x.t, devKind: x.dk, year: x.y ?? null, series: x.se || '', sheet: sheetOf(x.b),
     hasParts: x.hp, tokens: searchTokens(`${x.b || ''} ${x.m}`), r: x.r || {},
   }));
   const devModels = (pub?.devices || []).map((x) => {
@@ -72,7 +73,7 @@ export function liteCatalog(pub) {
 export function liteRepairQuote(model, repair, pcfg, addonIds = []) {
   const addons = (pcfg.addons || []).filter((a) => addonIds.includes(a.id));
   const sum = addons.reduce((s, a) => s + Number(a.amount || 0), 0);
-  const label = REPAIRS.find((r) => r.id === repair)?.label;
+  const label = repairLabel(repair, pcfg);
   const r = model.r?.[repair];
   let options = [], laborOnly = null;
   if (r) {

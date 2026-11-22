@@ -5,6 +5,7 @@ import { DEFAULT_CONFIG } from './defaults.js';
 import { buildPublicCatalog, publicConfig, sig } from './publish.js';
 import { pack, readPriceListDoc, readCatalogDoc } from './packing.js';
 import { CATALOG_ID } from './devices.js';
+import { DEFAULT_CUSTOM_REPAIRS } from './repairs.js';
 
 const LS_KEY = 'mehiron:v2';
 
@@ -23,6 +24,10 @@ export function mergeConfig(c) {
       ...(c.margins || {}),
     },
     ignoredDevices: c.ignoredDevices || [],
+    customRepairs: Array.isArray(c.customRepairs) ? c.customRepairs : DEFAULT_CUSTOM_REPAIRS.map((r) => ({ ...r, words: [...r.words] })),
+    qualities: { ...(c.qualities || {}) },
+    qualityNoise: c.qualityNoise || [],
+    ignoredParts: c.ignoredParts || [],
     marginMin: { ...(c.marginMin || {}) },
     marginMax: { ...(c.marginMax || {}) },
     marginOverrides: c.marginOverrides || {},
@@ -38,7 +43,8 @@ export function mergeConfig(c) {
 export function mergePublicConfig(p) {
   const d = publicConfig(DEFAULT_CONFIG);
   p = p || {};
-  return { ...d, ...p, rounding: { ...d.rounding, ...(p.rounding || {}) }, freshness: { ...d.freshness, ...(p.freshness || {}) } };
+  return { ...d, ...p, rounding: { ...d.rounding, ...(p.rounding || {}) }, freshness: { ...d.freshness, ...(p.freshness || {}) },
+    customRepairs: Array.isArray(p.customRepairs) ? p.customRepairs : DEFAULT_CUSTOM_REPAIRS };
 }
 
 const slim = (it) => {

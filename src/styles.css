@@ -213,3 +213,15 @@ textarea.input { min-height: 180px; resize: vertical; line-height: 1.5; }
 .dm-row .t2 { font-size: 12px; }
 .dev-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 10px; }
 @media (max-width: 380px) { .dev-form, .rv-form { grid-template-columns: minmax(0, 1fr); } }
+
+/* עדכון מחיר חלק מעמוד הדגם */
+.pe { margin-top: 10px; padding: 12px; border-radius: 14px; background: rgba(0,122,255,.06); display: grid; gap: 8px; }
+.pe .field { margin: 0; }
+.pe-new { display: grid; gap: 8px; }
+.pe-rows { display: grid; gap: 6px; }
+.pe-row { display: grid; grid-template-columns: 1fr 84px 34px; grid-template-areas: "q p d" "f f f"; gap: 6px; align-items: center; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.pe-row > :nth-child(1) { grid-area: q; } .pe-row > :nth-child(2) { grid-area: f; } .pe-row > :nth-child(3) { grid-area: p; } .pe-row > :nth-child(4) { grid-area: d; }
+.pe textarea.input { min-height: 0; height: 64px; }
+.pe-row .input { padding: 8px 6px; font-size: 14px; min-width: 0; }
+.pe-row .icon-btn { width: 34px; height: 34px; }
+.rv-q { display: grid; gap: 6px; }

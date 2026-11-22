@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { manualItem } from '../lib/parser.js';
-import { REPAIRS } from '../lib/defaults.js';
+import { allRepairs, repairLabel, optionName } from '../lib/repairs.js';
 import DevicesManager from './DevicesManager.jsx';
 import { searchTokens } from '../lib/normalize.js';
 import { fmt, Icon, daysLabel } from './util.jsx';
-import { freshness } from '../lib/pricing.js';
+import { freshness, partQuality } from '../lib/pricing.js';
 import { useBack } from './useBack.js';
 import { uniqueKey, bulkPrice, applyBulkPrice } from '../lib/items.js';
 import { buildWorkbook, exportFileName, readWorkbook, planImport, hardenExcelJS } from '../lib/excel.js';
@@ -200,7 +200,7 @@ export default function ItemsManager({ cfg, lists, catalog, store, toast, focus,
           {kind === 'parts' ? (
             <label className="field"><span>סוג חלק</span>
               <select className="input" value={edit.partType} onChange={(e) => setEdit({ ...edit, partType: e.target.value })}>
-                {REPAIRS.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+                {allRepairs(cfg).map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
               </select></label>
           ) : (
             <label className="field"><span>נפח (GB, לא חובה)</span>
@@ -208,6 +208,7 @@ export default function ItemsManager({ cfg, lists, catalog, store, toast, focus,
           )}
           <label className="field"><span>{kind === 'parts' ? 'איכות' : 'וריאנט / הערה (צבע, DCS, רשמי…)'}</span>
             <input className="input" dir="auto" value={edit.variant} onChange={(e) => setEdit({ ...edit, variant: e.target.value })} /></label>
+          {kind === 'parts' && <div className="muted">יוצג ללקוח כ: <b>{optionName(partQuality({ partType: edit.partType, variant: edit.variant, supplierId }, cfg))}</b></div>}
           <label className="field"><span>מחיר ספק (₪)</span>
             <input className="input num" inputMode="numeric" value={edit.price} onChange={(e) => setEdit({ ...edit, price: e.target.value.replace(/[^\d.]/g, '') })} /></label>
           {edit.raw && edit.raw !== 'ידני' && <div className="muted">מקור: {edit.raw}</div>}
@@ -266,8 +267,8 @@ export default function ItemsManager({ cfg, lists, catalog, store, toast, focus,
                 <button key={it.key} className={'row' + (on ? ' selected' : '')} onClick={() => (sel ? toggle(it.key) : setEdit({ ...toForm(it), key: it.key }))}>
                   {sel ? <span className={'check' + (on ? ' on' : '')} aria-checked={!!on} role="checkbox">{on ? '✓' : ''}</span> : <span className={'dot ' + freshness(it.updatedAt, cfg).level} />}
                   <div className="main">
-                    <div className="t1" style={{ fontSize: 15 }}>{it.name}{kind === 'parts' ? ` · ${REPAIRS.find((r) => r.id === it.partType)?.label || ''}` : ''}</div>
-                    <div className="t2">{[it.variant, it.manual ? 'ידני' : '', daysLabel(freshness(it.updatedAt, cfg).days)].filter(Boolean).join(' · ')}</div>
+                    <div className="t1" style={{ fontSize: 15 }}>{it.name}{kind === 'parts' ? ` · ${repairLabel(it.partType, cfg)}` : ''}</div>
+                    <div className="t2">{[kind === 'parts' ? optionName(partQuality({ ...it, supplierId }, cfg)) : it.variant, it.manual ? 'ידני' : '', daysLabel(freshness(it.updatedAt, cfg).days)].filter(Boolean).join(' · ')}</div>
                   </div>
                   <span className="num" style={{ fontWeight: 700 }}>{fmt(it.price)}</span>
                 </button>

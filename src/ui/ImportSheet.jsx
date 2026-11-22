@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { parseMessage, mergeItems, makeItem } from '../lib/parser.js';
-import { REPAIRS } from '../lib/defaults.js';
+import { allRepairs, repairLabel, qualitiesFor, optionName } from '../lib/repairs.js';
+import { partQuality } from '../lib/pricing.js';
+import { normText } from '../lib/normalize.js';
 import { catalogRows } from '../lib/publish.js';
 import {
   CATALOG_ID, SEGMENTS, matchSupplierItems, applySupplierImport, reviewDefaults, rowLabel, parseStorage,
@@ -9,19 +11,22 @@ import { fmtStorage } from '../lib/normalize.js';
 import { fmt, Icon } from './util.jsx';
 import { useBack } from './useBack.js';
 
-export default function ImportSheet({ cfg, lists, catalog, initialText = '', onClose, onSaveList, onSaveConfig, onSaveImport, toast }) {
+export default function ImportSheet({ cfg, lists, catalog, kind = null, initialText = '', onClose, onSaveConfig, onSaveImport, toast }) {
   const suppliers = cfg.suppliers || [];
-  const [supplierId, setSupplierId] = useState(suppliers[0]?.id || '');
+  // נפתח ממחירון התיקונים → ספק חלקים; ממחירון המכשירים → ספק מכשירים
+  const [supplierId, setSupplierId] = useState((kind && suppliers.find((s) => (s.type || 'devices') === kind)?.id) || suppliers[0]?.id || '');
   const supplier = suppliers.find((s) => s.id === supplierId);
   const isDev = supplier && supplier.type !== 'parts';
   const [partType, setPartType] = useState('screen');
-  const [mode, setMode] = useState('replace');
+  // ספק חלקים שולח בדרך כלל תשובה על כמה דגמים – עדכון חלקי. ספק מכשירים שולח מחירון מלא
+  const modeFor = (s) => (s && s.type === 'parts' ? 'merge' : 'replace');
+  const [mode, setMode] = useState(() => modeFor(supplier));
   const [text, setText] = useState(initialText);
   const [items, setItems] = useState(null);
   const [busy, setBusy] = useState(false);
   const [newSup, setNewSup] = useState(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
-  const opts = { kind: isDev ? 'devices' : 'parts', partType };
+  const opts = { kind: isDev ? 'devices' : 'parts', partType, cfg };
   useBack(!!items, () => setItems(null)); // אחורה מהתצוגה המקדימה חוזר לטקסט
 
   const run = (t = text) => {
@@ -66,7 +71,7 @@ export default function ImportSheet({ cfg, lists, catalog, initialText = '', onC
 
           <div className="card" style={{ padding: 14 }}>
             <label className="field"><span>ספק</span>
-              <select className="input" value={supplierId} onChange={(e) => { setSupplierId(e.target.value); setConfirmRemove(false); }}>
+              <select className="input" value={supplierId} onChange={(e) => { setSupplierId(e.target.value); setMode(modeFor(suppliers.find((x) => x.id === e.target.value))); setConfirmRemove(false); }}>
                 {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name} · {s.type === 'parts' ? 'חלקים' : 'מכשירים'}</option>)}
               </select>
             </label>
@@ -83,7 +88,7 @@ export default function ImportSheet({ cfg, lists, catalog, initialText = '', onC
             {supplier?.type === 'parts' && (
               <label className="field"><span>סוג חלק (כשלא כתוב בשורה עצמה)</span>
                 <select className="input" value={partType} onChange={(e) => setPartType(e.target.value)}>
-                  {REPAIRS.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+                  {allRepairs(cfg).map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
                 </select>
               </label>
             )}
@@ -103,9 +108,8 @@ export default function ImportSheet({ cfg, lists, catalog, initialText = '', onC
           </div>
 
           {items && !isDev && (
-            <PartsPreview items={items} setItems={setItems} opts={opts} old={lists?.[supplierId]?.items || []} mode={mode} supplier={supplier}
-              busy={busy} setBusy={setBusy} confirmRemove={confirmRemove} setConfirmRemove={setConfirmRemove}
-              onSave={async (merged) => { await onSaveList(supplierId, merged, { supplierName: supplier?.name || supplierId }); }} toast={toast} onClose={onClose} />
+            <PartsPreview key={supplierId} items={items} setItems={setItems} opts={opts} cfg={cfg} catalog={catalog} onSaveImport={onSaveImport} old={lists?.[supplierId]?.items || []} mode={mode} supplier={supplier}
+              busy={busy} setBusy={setBusy} confirmRemove={confirmRemove} setConfirmRemove={setConfirmRemove} toast={toast} onClose={onClose} />
           )}
           {items && isDev && (
             <DevicePreview key={supplierId} items={items} lists={lists} catalog={catalog} cfg={cfg} supplier={supplier} mode={mode}
@@ -117,20 +121,61 @@ export default function ImportSheet({ cfg, lists, catalog, initialText = '', onC
   );
 }
 
-// ---------- ספק חלקים: כמו קודם – מחירון של פריטים ----------
-function PartsPreview({ items, setItems, opts, old, mode, supplier, busy, setBusy, confirmRemove, setConfirmRemove, onSave, toast, onClose }) {
-  const stats = useMemo(() => {
-    const good = items.filter((i) => i.ok);
+// ---------- ספק חלקים: כל שורה מקבלת דגם, סוג תיקון ואיכות מאוחדת. דגם שלא זוהה / מילה שאולי היא איכות – לבחירה ----------
+export const partIgnoreKey = (it) => `p:${normText(it.model || it.name || it.raw || '')}`;
+
+function PartsPreview({ items, setItems, opts, cfg, catalog, onSaveImport, old, mode, supplier, busy, setBusy, confirmRemove, setConfirmRemove, toast, onClose }) {
+  const ignored = useMemo(() => new Set((cfg.ignoredParts || []).map((x) => x.key)), [cfg.ignoredParts]);
+  const [terms, setTerms] = useState({}); // מילה לא מוכרת → 'keep' | 'noise' | 'q:<id>' | 'new'
+  const [newNames, setNewNames] = useState({});
+  const [defQ, setDefQ] = useState(supplier?.defaultQuality || '');
+  const [skipAlways, setSkipAlways] = useState(() => new Set());
+
+  // ההגדרות אחרי הבחירות במסך הזה – כדי שהתצוגה תתעדכן מיד
+  const nextCfg = useMemo(() => {
+    const qualities = { ...(cfg.qualities || {}) };
+    const noise = [...(cfg.qualityNoise || [])];
+    for (const [k, v] of Object.entries(terms)) {
+      const [repair, word] = k.split('\u0001');
+      if (v === 'noise') { if (!noise.includes(word)) noise.push(word); continue; }
+      const list = (qualities[repair] || qualitiesFor(repair, cfg)).map((x) => ({ ...x, words: [...(x.words || [])] }));
+      if (v.startsWith('q:')) { const q = list.find((x) => x.id === v.slice(2)); if (q && !q.words.includes(word)) q.words.push(word); }
+      else if (v === 'new') { const name = (newNames[k] || word).trim(); list.push({ id: 'q' + Math.abs([...name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 7)).toString(36), label: name, words: [word] }); }
+      else continue;
+      qualities[repair] = list;
+    }
+    const suppliers = (cfg.suppliers || []).map((x) => (x.id === supplier?.id ? { ...x, defaultQuality: defQ || '' } : x));
+    return { ...cfg, qualities, qualityNoise: noise, suppliers };
+  }, [cfg, terms, newNames, defQ, supplier]);
+
+  const view = useMemo(() => {
     const oldMap = new Map(old.map((i) => [i.key, i]));
-    const newKeys = new Set(good.map((i) => i.key));
+    const rows = items.map((it) => {
+      const skipped = it.unknownModel && (ignored.has(partIgnoreKey(it)) || skipAlways.has(it._id));
+      const q = it.ok ? partQuality({ ...it, supplierId: supplier?.id }, nextCfg) : null;
+      return { it, q, skipped, o: oldMap.get(it.key) };
+    });
+    const good = rows.filter((r) => r.it.ok);
+    const newKeys = new Set(good.map((r) => r.it.key));
+    // מילים שאולי הן איכות (לפי ההגדרות הנוכחיות – לפני הבחירות כאן)
+    const unknown = new Map();
+    for (const r of good) {
+      const q0 = partQuality({ ...r.it, supplierId: supplier?.id }, cfg);
+      if (q0.qid || !q0.note) continue;
+      const k = `${r.it.partType}\u0001${q0.note}`;
+      if (!unknown.has(k)) unknown.set(k, { k, repair: r.it.partType, word: q0.note, n: 0, sample: r.it });
+      unknown.get(k).n++;
+    }
     return {
-      ok: good.length, bad: items.length - good.length,
-      added: good.filter((i) => !oldMap.has(i.key)).length,
-      changed: good.filter((i) => oldMap.has(i.key) && oldMap.get(i.key).price !== i.price).length,
+      rows, ok: good.length, unknown: [...unknown.values()],
+      badModel: rows.filter((r) => r.it.unknownModel && !r.skipped), skipped: rows.filter((r) => r.skipped).length,
+      bad: rows.filter((r) => !r.it.ok && !r.it.unknownModel).length,
+      noQuality: good.filter((r) => { const q0 = partQuality({ ...r.it, supplierId: supplier?.id }, { ...cfg, suppliers: [] }); return !q0.qid && !q0.note; }).length,
+      added: good.filter((r) => !r.o).length,
+      changed: good.filter((r) => r.o && r.o.price !== r.it.price).length,
       removed: mode === 'replace' ? old.filter((i) => !newKeys.has(i.key)).length : 0,
-      oldMap,
     };
-  }, [items, old, mode]);
+  }, [items, old, mode, supplier, ignored, skipAlways, nextCfg, cfg]);
 
   const updateRow = (id, patch) => setItems((arr) => arr.map((it) => {
     if (it._id !== id) return it;
@@ -139,52 +184,111 @@ function PartsPreview({ items, setItems, opts, old, mode, supplier, busy, setBus
       return { ...n, _id: id };
     }
     const price = Number(patch.price);
-    return { ...it, price, ok: Boolean(it.model && price > 0) };
+    return { ...it, price, ok: Boolean(it.model && price > 0 && !it.unknownModel) };
   }));
 
+  const modelNames = useMemo(() => [...new Set((catalog?.models || []).map((m) => m.model))].sort((a, b) => a.localeCompare(b, 'en', { numeric: true })), [catalog]);
+
   const save = async () => {
-    if (stats.removed > 0 && !confirmRemove) { setConfirmRemove(true); return; }
+    if (view.removed > 0 && !confirmRemove) { setConfirmRemove(true); return; }
     setBusy(true);
     try {
       const merged = mergeItems(old, items.filter((i) => i.ok).map(({ _id, ...r }) => r), { replace: mode === 'replace' });
-      await onSave(merged);
-      toast(`המחירון של ${supplier?.name} עודכן · ${merged.length} שורות`);
+      const newIgnored = view.rows.filter((r) => r.it.unknownModel && skipAlways.has(r.it._id))
+        .map((r) => ({ key: partIgnoreKey(r.it), label: r.it.raw || r.it.name }));
+      const cfgChanged = Object.keys(terms).some((k) => terms[k] !== 'keep') || (defQ || '') !== (supplier?.defaultQuality || '') || newIgnored.length;
+      await onSaveImport({
+        lists: { [supplier.id]: { items: merged, supplierName: supplier?.name || supplier.id } },
+        config: cfgChanged ? { ...nextCfg, ignoredParts: [...(cfg.ignoredParts || []), ...newIgnored.filter((x) => !ignored.has(x.key))] } : null,
+      });
+      toast(`המחירון של ${supplier?.name} עודכן · ${view.ok} שורות${mode === 'merge' ? ' עודכנו/נוספו' : ''}`);
       onClose();
     } catch (e) {
       toast('השמירה נכשלה: ' + (e?.message || e));
     } finally { setBusy(false); }
   };
 
+  const qOptions = (repair) => qualitiesFor(repair, cfg);
   return (
     <>
       <div className="stat">
-        <span className="tag green">זוהו {stats.ok}</span>
-        {stats.bad > 0 && <span className="tag red">לא זוהו {stats.bad}</span>}
-        <span className="tag gray">חדשים {stats.added}</span>
-        <span className="tag orange">מחיר השתנה {stats.changed}</span>
-        {stats.removed > 0 && <span className="tag red">יוסרו {stats.removed}</span>}
+        <span className="tag green">זוהו {view.ok}</span>
+        <span className="tag gray">חדשים {view.added}</span>
+        <span className="tag orange">מחיר השתנה {view.changed}</span>
+        {view.badModel.length > 0 && <span className="tag red">דגם לא זוהה {view.badModel.length}</span>}
+        {view.unknown.length > 0 && <span className="tag orange">מילים לא מוכרות {view.unknown.length}</span>}
+        {view.skipped > 0 && <span className="tag gray">דילוג קבוע {view.skipped}</span>}
+        {view.bad > 0 && <span className="tag red">בלי מחיר {view.bad}</span>}
+        {view.removed > 0 && <span className="tag red">יוסרו {view.removed}</span>}
       </div>
-      <div className="card list">
-        {[...items].sort((a, b) => Number(a.ok) - Number(b.ok)).map((it) => {
-          const o = stats.oldMap.get(it.key);
-          return (
-            <div key={it._id} className={'preview-row' + (it.ok ? '' : ' bad')}>
-              <span>{it.ok ? '✓' : '✗'}</span>
-              <div className="nm">
-                <input className="input" style={{ padding: '4px 8px', fontSize: 14 }} defaultValue={it.name || it.raw}
-                  onBlur={(e) => e.target.value !== (it.name || it.raw) && updateRow(it._id, { name: e.target.value })} />
-                <div className="v">{[REPAIRS.find((r) => r.id === it.partType)?.label, it.variant].filter(Boolean).join(' · ')}{o && o.price !== it.price ? ` · היה ${fmt(o.price)}` : ''}{!it.ok ? ` · "${it.raw}"` : ''}</div>
+
+      {view.badModel.length > 0 && (
+        <>
+          <div className="section-title">דגם לא זוהה – בחר דגם, או דלג</div>
+          <datalist id="part-models">{modelNames.map((n) => <option key={n} value={n} />)}</datalist>
+          <div className="card list">
+            {view.badModel.map(({ it }) => (
+              <div key={it._id} className="preview-row bad">
+                <span>?</span>
+                <div className="nm">
+                  <input className="input" list="part-models" style={{ padding: '4px 8px', fontSize: 14 }} placeholder="בחר דגם…" defaultValue=""
+                    onBlur={(e) => e.target.value.trim() && updateRow(it._id, { name: e.target.value })} />
+                  <div className="v">"{it.raw}" · {fmt(it.price)}</div>
+                </div>
+                <button className="btn" style={{ height: 30, padding: '0 8px' }} onClick={() => setSkipAlways((x) => new Set([...x, it._id]))}>דלג תמיד</button>
+                <button className="icon-btn" style={{ width: 30, height: 30 }} aria-label="דלג" onClick={() => setItems((a) => a.filter((x) => x._id !== it._id))}>{Icon.trash}</button>
               </div>
-              <input className="input sm num" inputMode="numeric" defaultValue={it.price}
-                onBlur={(e) => Number(e.target.value) !== it.price && updateRow(it._id, { price: e.target.value })} />
-              <button className="icon-btn" style={{ width: 30, height: 30 }} onClick={() => setItems((a) => a.filter((x) => x._id !== it._id))}>{Icon.trash}</button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {view.unknown.length > 0 && (
+        <>
+          <div className="section-title">מילים שאולי הן איכות</div>
+          <div className="card" style={{ padding: 12, display: 'grid', gap: 10 }}>
+            {view.unknown.map((u) => (
+              <div key={u.k} className="rv-q">
+                <div><b>"{u.word}"</b> · {repairLabel(u.repair, cfg)} · {u.n} שורות <span className="muted">(למשל {u.sample.name})</span></div>
+                <select className="input" value={terms[u.k] || 'keep'} onChange={(e) => setTerms({ ...terms, [u.k]: e.target.value })}>
+                  <option value="keep">להשאיר כמו שהספק כתב</option>
+                  {qOptions(u.repair).map((x) => <option key={x.id} value={`q:${x.id}`}>זו האיכות: {x.label}</option>)}
+                  <option value="new">איכות חדשה…</option>
+                  <option value="noise">זו לא איכות (לא לשאול שוב)</option>
+                </select>
+                {terms[u.k] === 'new' && <input className="input" placeholder="שם האיכות ללקוח" value={newNames[u.k] ?? u.word} onChange={(e) => setNewNames({ ...newNames, [u.k]: e.target.value })} />}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {view.noQuality > 0 && (
+        <label className="field" style={{ margin: '10px 4px' }}><span>{view.noQuality === 1 ? 'שורה אחת' : `${view.noQuality} שורות`} בלי שם איכות. אצל {supplier?.name} אלה:</span>
+          <select className="input" value={defQ} onChange={(e) => setDefQ(e.target.value)}>
+            <option value="">לא ידוע ("סטנדרטי")</option>
+            {qualitiesFor('screen', cfg).map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+          </select></label>
+      )}
+
+      <div className="card list">
+        {view.rows.filter((r) => !r.it.unknownModel).sort((a, b) => Number(a.it.ok) - Number(b.it.ok)).map(({ it, q, o }) => (
+          <div key={it._id} className={'preview-row' + (it.ok ? '' : ' bad')}>
+            <span>{it.ok ? '✓' : '✗'}</span>
+            <div className="nm">
+              <input className="input" style={{ padding: '4px 8px', fontSize: 14 }} defaultValue={it.name || it.raw}
+                onBlur={(e) => e.target.value !== (it.name || it.raw) && updateRow(it._id, { name: e.target.value })} />
+              <div className="v">{[repairLabel(it.partType, cfg), q ? optionName(q) : it.variant].filter(Boolean).join(' · ')}{o && o.price !== it.price ? ` · היה ${fmt(o.price)}` : ''}{!it.ok ? ` · "${it.raw}"` : ''}</div>
             </div>
-          );
-        })}
+            <input className="input sm num" inputMode="numeric" defaultValue={it.price}
+              onBlur={(e) => Number(e.target.value) !== it.price && updateRow(it._id, { price: e.target.value })} />
+            <button className="icon-btn" style={{ width: 30, height: 30 }} onClick={() => setItems((a) => a.filter((x) => x._id !== it._id))}>{Icon.trash}</button>
+          </div>
+        ))}
       </div>
       <div className="actions" style={{ position: 'sticky', bottom: 12 }}>
-        <button className={'btn ' + (confirmRemove ? 'danger confirm' : 'primary')} style={{ flex: 1, height: 48, justifyContent: 'center' }} disabled={busy || !stats.ok} onClick={save}>
-          {confirmRemove ? `${stats.removed} פריטים ישנים יימחקו מהמחירון · לחץ שוב לאישור` : `שמור ועדכן את כל הסניפים (${stats.ok})`}
+        <button className={'btn ' + (confirmRemove ? 'danger confirm' : 'primary')} style={{ flex: 1, height: 48, justifyContent: 'center' }} disabled={busy || !view.ok} onClick={save}>
+          {confirmRemove ? `${view.removed} פריטים ישנים יימחקו מהמחירון · לחץ שוב לאישור` : `שמור ועדכן את כל הסניפים (${view.ok})`}
         </button>
       </div>
     </>

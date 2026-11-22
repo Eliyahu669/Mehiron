@@ -54,6 +54,12 @@ export const DEFAULT_CONFIG = {
   marginMax: {},
   marginOverrides: {}, // row:<מזהה שורה> → אחוז רווח לשורה (מחליף את הכלל של הסגמנט)
   ignoredDevices: [], // פריטים מהודעות ספקים שבחרו "דלג תמיד": { key, label }
+  // מחירון תיקונים: סוגי תיקון שהמנהל הוסיף, רמות איכות לכל סוג (null = ברירת המחדל ב-repairs.js),
+  // מילים שאינן איכות (לא נשאלים עליהן), ושורות חלקים שבחרו "דלג תמיד"
+  customRepairs: null,
+  qualities: {},
+  qualityNoise: [],
+  ignoredParts: [],
   vat: 18, // לחישוב "רווח אחרי מע"מ" בפירוט הפנימי
   rounding: { step: 10, mode: 'ceil' },
   adminPhone: '0502272669', // לכאן נשלחות בקשות פירוט מהעובדים

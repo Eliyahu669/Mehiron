@@ -155,15 +155,18 @@ async def main():
             await pg3.wait_for_timeout(200)
             check('הקובץ ירד' in await pg3.inner_text('.toast'), 'הודעת ייצוא')
             wb = openpyxl.load_workbook(xpath)
-            check(wb.sheetnames[:5] == ['מחירון תיקונים', 'Apple', 'Samsung', 'Xiaomi', 'אחרים'], f'גיליונות: {wb.sheetnames}')
-            ws = wb['מחירון תיקונים']; h = {c.value: c.column for c in ws[1]}
-            sup_name = ws.cell(2, h['ספק']).value
-            ws.cell(2, h['מחיר ספק']).value = 999
-            ws.cell(2, h['דגם']).comment = Comment('לבדוק', 'אליהו')
-            deleted = ws.cell(3, h['דגם']).value
-            ws.delete_rows(3, 1)
+            check(wb.sheetnames[:8] == ['תיקונים Apple', 'תיקונים Samsung', 'תיקונים Xiaomi', 'תיקונים אחרים', 'Apple', 'Samsung', 'Xiaomi', 'אחרים'], f'גיליונות: {wb.sheetnames}')
+            ws = wb['תיקונים Samsung']; h = {c.value: c.column for c in ws[1]}
+            check(list(h)[:6] == ['יצרן', 'דגם', 'שנת השקה', 'סוג תיקון', 'איכות', 'מסגרת'], f'עמודות התיקונים: {list(h)[:8]}')
+            sup_col = next(k for k in h if str(k).startswith('מחיר ספק ')); sup_name = sup_col.replace('מחיר ספק ', '')
+            r2 = next(r for r in range(2, ws.max_row + 1) if ws.cell(r, h[sup_col]).value)
+            ws.cell(r2, h[sup_col]).value = 999
+            ws.cell(r2, h['דגם']).comment = Comment('לבדוק', 'אליהו')
+            r3 = next(r for r in range(r2 + 1, ws.max_row + 1) if ws.cell(r, h[sup_col]).value)
+            deleted = ws.cell(r3, h['דגם']).value
+            ws.delete_rows(r3, 1)
             n = ws.max_row + 1
-            for k, v in {'ספק': sup_name, 'דגם': 'Galaxy A99', 'סוג חלק': 'סוללה', 'איכות': 'מקורי', 'מחיר ספק': 123}.items(): ws.cell(n, h[k]).value = v
+            for k, v in {'יצרן': 'Samsung', 'דגם': 'Galaxy A99', 'סוג תיקון': 'סוללה', 'איכות': 'מקורית', sup_col: 123}.items(): ws.cell(n, h[k]).value = v
             wd = wb['Apple']; hd = {c.value: c.column for c in wd[1]}
             check(list(hd)[:7] == ['יצרן', 'רמות גימור/סגמנטציה', 'סדרה', 'שם הדגם', 'נפחי אחסון זמינים', 'גרסה', 'שנת השקה'], f'עמודות המכשירים: {list(hd)[:9]}')
             dev_row = next(r for r in range(2, wd.max_row + 1) if wd.cell(r, hd['מחיר ללקוח']).value and str(wd.cell(r, hd['שם הדגם']).value).startswith('iPhone 1'))
@@ -238,6 +241,48 @@ async def main():
             t = await pg5.inner_text('.sheet'); check('2,420' in t, 'iPhone 16e 128 רשמי: 2100 + 15% ← 2,420')
             await back(pg5); await pg5.click('.mode-seg button:has-text("תיקונים")'); await pg5.wait_for_timeout(150)
             await pg5.close()
+
+            print('תיקונים: הזנת מחירי מסך ידנית מעמוד הדגם (כמה איכויות), ובדיקה לפני שמירה בעדכון מספק')
+            pg6 = await ctx.new_page(); pg6.on('pageerror', lambda e: errs.append(str(e)))
+            await pg6.goto(URL); await pg6.wait_for_timeout(700)
+            await pg6.click('.search input'); await pg6.keyboard.type('אייפון 17 פרו מסך', delay=10); await pg6.wait_for_timeout(300)
+            first = (await pg6.locator('.card.list .row').all_inner_texts())[0]
+            check(first.startswith('iPhone 17 Pro\n') and '+ חלק' in first, f'עוד אין מחיר חלק: {first!r}')
+            await pg6.click('.card.list .row >> nth=0'); await pg6.wait_for_timeout(300)
+            await pg6.click('.quote button:has-text("עדכן מחיר")'); await pg6.wait_for_timeout(150)
+            await pg6.select_option('.pe select >> nth=0', value='__new')
+            await pg6.fill('.pe input[placeholder="שם הספק"]', 'ספק מסכים')
+            await pg6.fill('.pe textarea', 'אינסל 150, אולד 250, מקורי סרוויס 1170'); await pg6.click('.pe button:has-text("מלא מהתשובה")'); await pg6.wait_for_timeout(150)
+            check(await pg6.locator('.pe-row').count() == 3, f'שלוש שורות מהתשובה: {await pg6.locator(".pe-row").count()}')
+            await pg6.select_option('.pe-row >> nth=2 >> select >> nth=1', value='with')
+            await pg6.screenshot(path=f'{SHOTS}/e2e-price-editor.png')
+            await pg6.click('.pe button:has-text("שמור")'); await pg6.wait_for_timeout(500)
+            check('נשמר' in await pg6.inner_text('.toast'), 'נשמר')
+            t = await pg6.inner_text('.quote >> nth=0')
+            check('אינסל' in t and '400' in t and 'OLED' in t and '500' in t and 'מקורי סרוויס · כולל מסגרת' in t and '1,420' in t, f'שלוש איכויות עם עבודה 250: {t[:200]!r}')
+            await pg6.click('.quote button:has-text("עדכן מחיר")'); await pg6.wait_for_timeout(150)
+            await pg6.select_option('.pe select >> nth=0', label='ספק מסכים'); await pg6.wait_for_timeout(100)
+            check(await pg6.locator('.pe-row').count() == 3, 'עריכה: המחירים הקיימים של הספק נטענו')
+            await pg6.fill('.pe-row >> nth=0 >> input', '160'); await pg6.click('.pe button:has-text("שמור")'); await pg6.wait_for_timeout(500)
+            check('410' in await pg6.inner_text('.quote >> nth=0'), 'אינסל עודכן ל-160 → 410')
+            await back(pg6); await pg6.fill('.search input', ''); await pg6.wait_for_timeout(100)
+
+            await pg6.click('text=עדכן מחירון'); await pg6.wait_for_timeout(200)
+            check(await pg6.locator('.sheet .seg button.on:has-text("עדכון חלקי")').count() == 1, 'ספק חלקים – ברירת המחדל עדכון חלקי (לא מוחק את השאר)')
+            await pg6.fill('.sheet textarea', '17 pro incell 150\nGalaxy A54 מקורי סאני 210'); await pg6.click('.sheet button:has-text("פענח")'); await pg6.wait_for_timeout(300)
+            tags = await pg6.inner_text('.sheet .stat'); check('דגם לא זוהה 1' in tags, f'"17 pro" בלי יצרן – לבחירה: {tags!r}')
+            await pg6.fill('input[list="part-models"]', 'iPhone 17 Pro'); await pg6.keyboard.press('Tab'); await pg6.wait_for_timeout(200)
+            tags = await pg6.inner_text('.sheet .stat'); check('זוהו 2' in tags and 'דגם לא זוהה' not in tags, f'אחרי בחירת דגם: {tags!r}')
+            await pg6.click('.sheet button:has-text("שמור ועדכן")'); await pg6.wait_for_timeout(500)
+            await pg6.click('.search input'); await pg6.keyboard.type('אייפון 17 פרו מסך', delay=10); await pg6.wait_for_timeout(300)
+            await pg6.click('.card.list .row >> nth=0'); await pg6.wait_for_timeout(300)
+            check('400' in await pg6.inner_text('.quote >> nth=0'), 'אינסל: הזול מבין שני הספקים (150) → 400')
+            await back(pg6)
+            await pg6.click('.icon-btn[title="הגדרות"]'); await pg6.click('.sheet .pill:has-text("סוגי תיקון ואיכויות")'); await pg6.wait_for_timeout(200)
+            t = await pg6.inner_text('.sheet')
+            check('מסך חיצוני' in t, 'סוג התיקון "מסך חיצוני" קיים')
+            await pg6.screenshot(path=f'{SHOTS}/e2e-repair-types.png')
+            await back(pg6); await pg6.close()
 
             print('אין אף רשומת היסטוריה שנוצרה בלי פעולת משתמש')
             # (הדף כבר נסגר; בודקים בהרצה נפרדת קצרה)
