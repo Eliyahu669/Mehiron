@@ -9,22 +9,39 @@ export const REPAIRS = [
   { id: 'housing', label: 'החלפת גוף', words: ['גוף', 'housing', 'שלדה'] },
 ];
 
-// סדרות בטבלת עלות העבודה. לסדרות המקוריות יש זיהוי אוטומטי (auto); לכל סדרה אפשר להוסיף "תחילת שם" (prefixes).
-// המנהל משנה שמות, מוסיף ומוחק סדרות בהגדרות – הרשימה שלו נשמרת ב-config.laborGroups
-export const LABOR_GROUPS = [
-  { id: 'iphone:new', label: 'iPhone 14–18', family: 'iphone', tier: 'new', auto: 'iPhone 14 ומעלה, Air, 16e', prefixes: [] },
-  { id: 'iphone:old', label: 'iPhone X–13', family: 'iphone', tier: 'old', auto: 'iPhone X / XR / XS, 11–13', prefixes: [] },
-  { id: 'galaxy:z', label: 'Galaxy Z (מתקפלים)', family: 'galaxy-z', tier: 'z', auto: 'Galaxy Z', prefixes: [] },
-  { id: 'galaxy:s', label: 'Galaxy S (דגל)', family: 'galaxy-s', tier: 's', auto: 'Galaxy S', prefixes: [] },
-  { id: 'galaxy:a', label: 'Galaxy A (ביניים)', family: 'galaxy-a', tier: 'a', auto: 'Galaxy A', prefixes: [] },
-  { id: 'galaxy:note', label: 'Galaxy Note', family: 'galaxy-note', auto: 'Galaxy Note', prefixes: [] },
-  { id: 'galaxy:mje', label: 'Galaxy M / J / E', families: ['galaxy-m', 'galaxy-j', 'galaxy-e'], auto: 'Galaxy M / J / E', prefixes: [] },
-  { id: 'xiaomi', label: 'Xiaomi / POCO F', family: 'xiaomi', auto: 'Xiaomi / Mi / POCO F', prefixes: [] },
-  { id: 'redmi', label: 'Redmi / Redmi Note', family: 'redmi', auto: 'Redmi / Redmi Note', prefixes: [] },
+// סדרות בטבלת עלות העבודה. כל סדרה = רשימת "תחילת שם" (prefixes): דגם ששמו מתחיל כך שייך לסדרה.
+// המנהל משנה שמות, דגמים, מוסיף ומוחק סדרות בהגדרות – הרשימה שלו נשמרת ב-config.laborGroups
+export const DEFAULT_GROUP_PREFIXES = {
+  'iphone:new': ['iPhone 14', 'iPhone 15', 'iPhone 16', 'iPhone 17', 'iPhone 18', 'iPhone Air', 'iPhone Duo'],
+  'iphone:old': ['iPhone X', 'iPhone 11', 'iPhone 12', 'iPhone 13'],
+  'galaxy:z': ['Galaxy Z'],
+  'galaxy:s': ['Galaxy S'],
+  'galaxy:a': ['Galaxy A'],
+  'galaxy:note': ['Galaxy Note'],
+  'galaxy:mje': ['Galaxy M', 'Galaxy J', 'Galaxy E'],
+  xiaomi: ['Xiaomi', 'Mi', 'POCO F'],
+  redmi: ['Redmi'],
+};
+const GROUP_LABELS = [
+  ['iphone:new', 'iPhone 14–18'], ['iphone:old', 'iPhone X–13'], ['galaxy:z', 'Galaxy Z (מתקפלים)'], ['galaxy:s', 'Galaxy S (דגל)'],
+  ['galaxy:a', 'Galaxy A (ביניים)'], ['galaxy:note', 'Galaxy Note'], ['galaxy:mje', 'Galaxy M / J / E'], ['xiaomi', 'Xiaomi / POCO F'], ['redmi', 'Redmi / Redmi Note'],
 ];
+export const LABOR_GROUPS = GROUP_LABELS.map(([id, label]) => ({ id, label, prefixes: [...DEFAULT_GROUP_PREFIXES[id]] }));
 
+// סדרות שנשמרו לפני המעבר (עם זיהוי אוטומטי family/tier): הזיהוי הופך לתחילות השם שלו, כדי שיופיעו ויהיה אפשר לערוך אותן
+const migrated = new WeakMap();
 /** הסדרות שבתוקף: של המנהל אם שמר, אחרת המקוריות */
-export const laborGroupsOf = (cfg) => (Array.isArray(cfg?.laborGroups) && cfg.laborGroups.length ? cfg.laborGroups : LABOR_GROUPS);
+export function laborGroupsOf(cfg) {
+  const gs = Array.isArray(cfg?.laborGroups) && cfg.laborGroups.length ? cfg.laborGroups : LABOR_GROUPS;
+  let m = migrated.get(gs);
+  if (!m) {
+    m = gs.map((g) => (g.family || g.families
+      ? { id: g.id, label: g.label, prefixes: [...new Set([...(DEFAULT_GROUP_PREFIXES[g.id] || []), ...(g.prefixes || [])])] }
+      : g));
+    migrated.set(gs, m);
+  }
+  return m;
+}
 
 export const DEFAULT_CONFIG = {
   version: 1,

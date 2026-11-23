@@ -238,3 +238,8 @@ textarea.input { min-height: 180px; resize: vertical; line-height: 1.5; }
 .sgrid-in { width: 64px; border: 0; background: transparent; padding: 8px 4px; text-align: center; font-size: 14px; outline: none; }
 .sgrid-in:focus { background: rgba(0,122,255,.08); }
 .dm-row .input.sm { width: 96px; }
+.dgrid { width: 100%; }
+.dgrid .stick { min-width: 130px; max-width: 170px; }
+.dgrid-model { padding: 8px; font-weight: 600; text-align: start; }
+.dgrid-c { padding: 6px 4px; text-align: center; color: var(--text2); white-space: nowrap; }
+.dgrid .sgrid-in { width: 100%; min-width: 72px; }

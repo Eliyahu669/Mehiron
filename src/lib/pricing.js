@@ -10,38 +10,38 @@ export function roundPrice(v, cfg) {
   return f(Math.round((v / step) * 1e6) / 1e6) * step; // בלי שגיאות שבר עשרוני (4050.0000000000005 לא מתעגל ל-4060)
 }
 
-// סדרה לפי תחילת השם: "Galaxy A5" → A54, A55; "iPhone 8" → iPhone 8, 8 Plus. מילת יצרן (אייפון / גלקסי / שיאומי) מחייבת את היצרן
-const BRAND_OF = { iphone: 'Apple', ip: 'Apple', apple: 'Apple', galaxy: 'Samsung', samsung: 'Samsung', xiaomi: 'Xiaomi' };
+// סדרה לפי תחילת השם: "Galaxy A5" → A54, A55; "iPhone 8" → iPhone 8, 8 Plus; "אייפון SE" → iPhone SE
+const ALIAS = { ip: 'iphone', apple: 'iphone', samsung: 'galaxy' };
+const LEAD_BRANDS = new Set(['iphone', 'galaxy', 'xiaomi']);
+const toks = (s) => tokenize(s).map((t) => ALIAS[t] || t);
 const prefixCache = new Map();
-function prefixParts(prefix) {
-  let v = prefixCache.get(prefix);
-  if (!v) {
-    const t = tokenize(prefix);
-    v = { brands: [...new Set(t.filter((x) => BRAND_OF[x]).map((x) => BRAND_OF[x]))], rest: t.filter((x) => !BRAND_OF[x]).join(' ') };
-    prefixCache.set(prefix, v);
-  }
-  return v;
+/** תחילת שם בצורה מנורמלת – להשוואה בין סדרות (אותה תחילת שם בשתי סדרות) */
+export function prefixKey(prefix) {
+  const k = String(prefix || '');
+  let v = prefixCache.get(k);
+  if (v === undefined) { v = toks(k); prefixCache.set(k, v); }
+  return v.join(' ');
 }
 
 /** 0 = השם לא מתחיל כך; אחרת – ככל שהתחילית ארוכה יותר, ההתאמה חזקה יותר */
 export function prefixScore(prefix, model) {
-  const { brands, rest } = prefixParts(String(prefix || ''));
-  if (!brands.length && !rest) return 0;
-  if (brands.length && !brands.includes(model.brand)) return 0;
-  if (!rest) return 1;
-  const m = tokenize(model.model).filter((x) => !BRAND_OF[x]).join(' ');
-  return m.startsWith(rest) ? rest.length + 1 : 0;
+  const p = prefixKey(prefix);
+  if (!p || !model?.model) return 0;
+  const m = toks(model.model);
+  if (m.join(' ').startsWith(p)) return p.length + 1;
+  // בלי מילת יצרן ("A5"): משווים לשם בלי "Galaxy" / "iPhone" שבתחילתו
+  if (prefixCache.get(String(prefix || '')).some((t) => LEAD_BRANDS.has(t))) return 0;
+  let i = 0;
+  while (i < m.length && LEAD_BRANDS.has(m[i])) i++;
+  return i && m.slice(i).join(' ').startsWith(p) ? p.length + 1 : 0;
 }
 
-/** הסדרה של הדגם בטבלת העבודה: קודם תחילת שם (הארוכה ביותר מכל הסדרות), אחר כך הזיהוי האוטומטי */
+/** הסדרה של הדגם בטבלת העבודה: תחילת השם הארוכה ביותר שמתאימה, מכל הסדרות */
 export function groupFor(model, cfg = null) {
   if (!model) return null;
-  const groups = laborGroupsOf(cfg);
   let best = null, score = 0;
-  for (const g of groups) for (const p of g.prefixes || []) { const s = prefixScore(p, model); if (s > score) { score = s; best = g.id; } }
-  if (best) return best;
-  const g = groups.find((x) => (x.families ? x.families.includes(model.family) : x.family && x.family === model.family) && (!x.tier || x.tier === model.tier));
-  return g ? g.id : null;
+  for (const g of laborGroupsOf(cfg)) for (const p of g.prefixes || []) { const s = prefixScore(p, model); if (s > score) { score = s; best = g.id; } }
+  return best;
 }
 
 // השוואה לפי מילים מנורמלות: "אייפון 15" = "iPhone 15", "A54" = "Galaxy A54"

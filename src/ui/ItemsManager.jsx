@@ -7,6 +7,7 @@ import { searchTokens } from '../lib/normalize.js';
 import { fmt, Icon, daysLabel } from './util.jsx';
 import { freshness, partQuality } from '../lib/pricing.js';
 import { useBack } from './useBack.js';
+import { CATALOG_ID, rowLabel } from '../lib/devices.js';
 import { uniqueKey, bulkPrice, applyBulkPrice } from '../lib/items.js';
 import { buildWorkbook, exportFileName, readWorkbook, planImport, hardenExcelJS } from '../lib/excel.js';
 
@@ -23,13 +24,18 @@ export default function ItemsManager({ cfg, lists, catalog, store, toast, focus,
   const [supplierId, setSupplierId] = useState(focus?.row ? DEVICES : focus?.supplierId || suppliers.find((s) => s.type === 'parts')?.id || DEVICES);
   const supplier = suppliers.find((s) => s.id === supplierId);
   const kind = supplier?.type === 'parts' ? 'parts' : 'devices';
-  const [view, setView] = useState(focus?.key ? 'list' : 'grid'); // ספק חלקים: טבלה / רשימת פריטים
+  const [view, setView] = useState(focus?.key ? 'list' : 'grid'); // ספק: טבלה / רשימת פריטים
   const items = lists?.[supplierId]?.items || [];
+  // פריט של ספק מכשירים שמקושר לשורה ברשימת המכשירים – השם שלו מגיע מהשורה
+  const devRows = useMemo(() => new Map((lists?.[CATALOG_ID]?.items || []).map((r) => [r.id, r])), [lists]);
+  const linked = (it) => (it?.row ? devRows.get(it.row) : null);
+  const titleOf = (it) => { const r = linked(it); return r ? rowLabel(r) : it.name; };
   const [q, setQ] = useState('');
   const [edit, setEdit] = useState(() => {
     if (!focus?.key) return null;
     const it = (lists?.[focus.supplierId]?.items || []).find((x) => x.key === focus.key);
-    return it ? { ...toForm(it), key: it.key } : null;
+    const r = it?.row && (lists?.[CATALOG_ID]?.items || []).find((x) => x.id === it.row);
+    return it ? { ...toForm(it), ...(r ? { row: it.row, name: rowLabel(r) } : {}), key: it.key } : null;
   });
   const [busy, setBusy] = useState(false);
   const [sel, setSel] = useState(null); // null = לא במצב בחירה, אחרת Set של מפתחות
@@ -111,10 +117,10 @@ export default function ItemsManager({ cfg, lists, catalog, store, toast, focus,
     const t = searchTokens(q);
     if (!t.length) return items;
     return items.filter((it) => {
-      const hay = searchTokens(`${it.brand || ''} ${it.name} ${it.variant || ''}`);
+      const hay = searchTokens(`${it.brand || linked(it)?.brand || ''} ${titleOf(it)} ${it.variant || ''}`);
       return t.every((x, j) => hay.includes(x) || (j === t.length - 1 && hay.some((h) => h.startsWith(x))) || (it.variant || '').includes(x));
     });
-  }, [items, q]);
+  }, [items, q, devRows]);
 
   const saveList = async (next, label) => {
     setBusy(true);
@@ -129,6 +135,15 @@ export default function ItemsManager({ cfg, lists, catalog, store, toast, focus,
   const onSave = async () => {
     const index = edit.key != null ? items.findIndex((x) => x.key === edit.key) : -1;
     const prev = index >= 0 ? items[index] : null;
+    if (linked(prev)) { // שורה מרשימת המכשירים: משתנה רק המחיר (כמו בטבלה)
+      const price = Number(edit.price);
+      if (!(price > 0)) { toast('חסר מחיר'); return; }
+      const now = Date.now(), changed = price !== prev.price;
+      const next = [...items];
+      next[index] = { ...prev, price, manual: true, updatedAt: now, changedAt: changed ? now : prev.changedAt, prevPrice: changed ? prev.price : prev.prevPrice ?? null };
+      if (await saveList(next, 'הפריט עודכן')) setEdit(null);
+      return;
+    }
     const it = manualItem(edit, kind, prev);
     if (!it.ok) { toast('חסר שם או מחיר'); return; }
     const { ok, ...rec } = it;
@@ -192,7 +207,7 @@ export default function ItemsManager({ cfg, lists, catalog, store, toast, focus,
           <input ref={fileRef} type="file" accept={`.xlsx,${XLSX_TYPE}`} hidden onChange={onPickFile} />
         </div>
       )}
-      {kind === 'parts' && supplier && !edit && !sel && (
+      {supplier && !edit && !sel && (
         <div className="seg" style={{ marginTop: 8 }}>
           <button className={view === 'grid' ? 'on' : ''} onClick={() => setView('grid')}>טבלה</button>
           <button className={view === 'list' ? 'on' : ''} onClick={() => setView('list')}>רשימת פריטים</button>
@@ -201,14 +216,19 @@ export default function ItemsManager({ cfg, lists, catalog, store, toast, focus,
 
       {supplierId === DEVICES ? (
         <DevicesManager cfg={cfg} lists={lists} catalog={catalog} store={store} toast={toast} focusRow={focus?.row} onConfigSaved={onConfigSaved} />
-      ) : supplier && (kind === 'devices' || view === 'grid') && !edit ? (
+      ) : supplier && view === 'grid' && !edit ? (
         <SupplierGrid key={supplierId} cfg={cfg} lists={lists} supplier={supplier} store={store} toast={toast} onConfigSaved={onConfigSaved} />
       ) : edit ? (
         <div className="card" style={{ padding: 14, marginTop: 8 }}>
           <div className="t1" style={{ fontWeight: 700, marginBottom: 4 }}>{edit.key != null ? 'עריכת פריט' : 'פריט חדש'} · {supplier?.name}</div>
+          {edit.row ? (
+            <div className="field"><span>מכשיר מהרשימה</span><div className="t1" style={{ margin: '0 4px' }}>{edit.name}</div>
+              <div className="muted">שינוי השם, הנפח והגרסה – ב"רשימת מכשירים".</div></div>
+          ) : (
           <label className="field"><span>שם הדגם / הפריט</span>
             <input className="input" dir="auto" value={edit.name} placeholder={kind === 'parts' ? 'Galaxy A54' : 'iPhone 15 Pro'} onChange={(e) => setEdit({ ...edit, name: e.target.value })} /></label>
-          {kind === 'parts' ? (
+          )}
+          {edit.row ? null : kind === 'parts' ? (
             <label className="field"><span>סוג חלק</span>
               <select className="input" value={edit.partType} onChange={(e) => setEdit({ ...edit, partType: e.target.value })}>
                 {allRepairs(cfg).map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
@@ -217,8 +237,8 @@ export default function ItemsManager({ cfg, lists, catalog, store, toast, focus,
             <label className="field"><span>נפח (GB, לא חובה)</span>
               <input className="input" inputMode="numeric" value={edit.storage ?? ''} onChange={(e) => setEdit({ ...edit, storage: e.target.value.replace(/\D/g, '') })} /></label>
           )}
-          <label className="field"><span>{kind === 'parts' ? 'איכות' : 'וריאנט / הערה (צבע, DCS, רשמי…)'}</span>
-            <input className="input" dir="auto" value={edit.variant} onChange={(e) => setEdit({ ...edit, variant: e.target.value })} /></label>
+          {!edit.row && <label className="field"><span>{kind === 'parts' ? 'איכות' : 'וריאנט / הערה (צבע, DCS, רשמי…)'}</span>
+            <input className="input" dir="auto" value={edit.variant} onChange={(e) => setEdit({ ...edit, variant: e.target.value })} /></label>}
           {kind === 'parts' && <div className="muted">יוצג ללקוח כ: <b>{optionName(partQuality({ partType: edit.partType, variant: edit.variant, supplierId }, cfg))}</b></div>}
           <label className="field"><span>מחיר ספק (₪)</span>
             <input className="input num" inputMode="numeric" value={edit.price} onChange={(e) => setEdit({ ...edit, price: e.target.value.replace(/[^\d.]/g, '') })} /></label>
@@ -275,10 +295,10 @@ export default function ItemsManager({ cfg, lists, catalog, store, toast, focus,
             {shown.slice(0, 300).map((it) => {
               const on = sel?.has(it.key);
               return (
-                <button key={it.key} className={'row' + (on ? ' selected' : '')} onClick={() => (sel ? toggle(it.key) : setEdit({ ...toForm(it), key: it.key }))}>
+                <button key={it.key} className={'row' + (on ? ' selected' : '')} onClick={() => (sel ? toggle(it.key) : setEdit({ ...toForm(it), ...(linked(it) ? { row: it.row, name: titleOf(it) } : {}), key: it.key }))}>
                   {sel ? <span className={'check' + (on ? ' on' : '')} aria-checked={!!on} role="checkbox">{on ? '✓' : ''}</span> : <span className={'dot ' + freshness(it.updatedAt, cfg).level} />}
                   <div className="main">
-                    <div className="t1" style={{ fontSize: 15 }}>{it.name}{kind === 'parts' ? ` · ${repairLabel(it.partType, cfg)}` : ''}</div>
+                    <div className="t1" style={{ fontSize: 15 }}>{titleOf(it)}{kind === 'parts' ? ` · ${repairLabel(it.partType, cfg)}` : ''}</div>
                     <div className="t2">{[kind === 'parts' ? optionName(partQuality({ ...it, supplierId }, cfg)) : it.variant, it.manual ? 'ידני' : '', daysLabel(freshness(it.updatedAt, cfg).days)].filter(Boolean).join(' · ')}</div>
                   </div>
                   <span className="num" style={{ fontWeight: 700 }}>{fmt(it.price)}</span>
