@@ -9,21 +9,27 @@ export const REPAIRS = [
   { id: 'housing', label: 'החלפת גוף', words: ['גוף', 'housing', 'שלדה'] },
 ];
 
+// סדרות בטבלת עלות העבודה. לסדרות המקוריות יש זיהוי אוטומטי (auto); לכל סדרה אפשר להוסיף "תחילת שם" (prefixes).
+// המנהל משנה שמות, מוסיף ומוחק סדרות בהגדרות – הרשימה שלו נשמרת ב-config.laborGroups
 export const LABOR_GROUPS = [
-  { id: 'iphone:new', label: 'iPhone 14–18', family: 'iphone', tier: 'new' },
-  { id: 'iphone:old', label: 'iPhone X–13', family: 'iphone', tier: 'old' },
-  { id: 'galaxy:z', label: 'Galaxy Z (מתקפלים)', family: 'galaxy-z', tier: 'z' },
-  { id: 'galaxy:s', label: 'Galaxy S (דגל)', family: 'galaxy-s', tier: 's' },
-  { id: 'galaxy:a', label: 'Galaxy A (ביניים)', family: 'galaxy-a', tier: 'a' },
-  { id: 'galaxy:note', label: 'Galaxy Note', family: 'galaxy-note' },
-  { id: 'galaxy:mje', label: 'Galaxy M / J / E', families: ['galaxy-m', 'galaxy-j', 'galaxy-e'] },
-  { id: 'xiaomi', label: 'Xiaomi / POCO F', family: 'xiaomi' },
-  { id: 'redmi', label: 'Redmi / Redmi Note', family: 'redmi' },
+  { id: 'iphone:new', label: 'iPhone 14–18', family: 'iphone', tier: 'new', auto: 'iPhone 14 ומעלה, Air, 16e', prefixes: [] },
+  { id: 'iphone:old', label: 'iPhone X–13', family: 'iphone', tier: 'old', auto: 'iPhone X / XR / XS, 11–13', prefixes: [] },
+  { id: 'galaxy:z', label: 'Galaxy Z (מתקפלים)', family: 'galaxy-z', tier: 'z', auto: 'Galaxy Z', prefixes: [] },
+  { id: 'galaxy:s', label: 'Galaxy S (דגל)', family: 'galaxy-s', tier: 's', auto: 'Galaxy S', prefixes: [] },
+  { id: 'galaxy:a', label: 'Galaxy A (ביניים)', family: 'galaxy-a', tier: 'a', auto: 'Galaxy A', prefixes: [] },
+  { id: 'galaxy:note', label: 'Galaxy Note', family: 'galaxy-note', auto: 'Galaxy Note', prefixes: [] },
+  { id: 'galaxy:mje', label: 'Galaxy M / J / E', families: ['galaxy-m', 'galaxy-j', 'galaxy-e'], auto: 'Galaxy M / J / E', prefixes: [] },
+  { id: 'xiaomi', label: 'Xiaomi / POCO F', family: 'xiaomi', auto: 'Xiaomi / Mi / POCO F', prefixes: [] },
+  { id: 'redmi', label: 'Redmi / Redmi Note', family: 'redmi', auto: 'Redmi / Redmi Note', prefixes: [] },
 ];
+
+/** הסדרות שבתוקף: של המנהל אם שמר, אחרת המקוריות */
+export const laborGroupsOf = (cfg) => (Array.isArray(cfg?.laborGroups) && cfg.laborGroups.length ? cfg.laborGroups : LABOR_GROUPS);
 
 export const DEFAULT_CONFIG = {
   version: 1,
   laborUpdated: 'נובמבר 2026',
+  laborGroups: null,
   labor: {
     'iphone:new': { screen: 250, battery: 150, port: 350, back: 200, housing: 400, camera: 300 },
     'iphone:old': { screen: 150, battery: 100, port: 250, back: 350, housing: 300, camera: 200 },

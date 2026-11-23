@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { REPAIRS, LABOR_GROUPS } from '../lib/defaults.js';
+import { REPAIRS, laborGroupsOf } from '../lib/defaults.js';
+import { laborGroupOf } from '../lib/pricing.js';
 import { allRepairs, repairLabel, qualitiesFor, qualityLabel, FRAME, DEFAULT_QUALITIES, partColumns } from '../lib/repairs.js';
 import { SHEETS } from '../lib/devices.js';
 import { SEGMENTS, rowLabel } from '../lib/devices.js';
@@ -47,26 +48,7 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
             {tabs.map(([k, l]) => <button key={k} className={'pill' + (tab === k ? ' on' : '')} onClick={() => setTab(k)}>{l}</button>)}
           </div>
 
-          {tab === 'labor' && (
-            <>
-              <div className="muted" style={{ margin: '8px 4px' }}>עלות עבודה ללא חלק, לפי עמודות המחירון ({d.laborUpdated}). שדה ריק = לא מוגדר.</div>
-              <div className="card scroll-x" style={{ padding: 8 }}>
-                <table className="grid-table">
-                  <thead><tr><th>סדרה</th>{reps.map((r) => <th key={r.id}>{r.label}</th>)}</tr></thead>
-                  <tbody>
-                    {LABOR_GROUPS.map((g) => (
-                      <tr key={g.id}><td>{g.label}</td>
-                        {reps.map((r) => (
-                          <td key={r.id}><input className="input sm num" inputMode="numeric" value={d.labor[g.id]?.[r.id] ?? ''}
-                            onChange={(e) => set((y) => { y.labor[g.id] = y.labor[g.id] || {}; y.labor[g.id][r.id] = numOrNull(e.target.value); })} /></td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
+          {tab === 'labor' && <LaborTab d={d} set={set} catalog={catalog} />}
 
           {tab === 'rules' && <Rules d={d} set={set} catalog={catalog} />}
           {tab === 'repairs' && <RepairTypes d={d} set={set} />}
@@ -274,6 +256,86 @@ function RepairTypes({ d, set }) {
   );
 }
 
+const splitPrefixes = (t) => [...new Set(String(t || '').split(/[,،\n]/).map((x) => x.trim()).filter(Boolean))];
+
+/** טבלת עלות העבודה: הסכומים, ועריכת הסדרות עצמן (שם, תחילת שם, הוספה ומחיקה) */
+function LaborTab({ d, set, catalog }) {
+  const reps = allRepairs(d);
+  const groups = laborGroupsOf(d);
+  const [edit, setEdit] = useState(null);
+  const box = useRef(null);
+  useEffect(() => { if (edit) box.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [edit?.id]);
+  const withGroups = (fn) => set((y) => { y.laborGroups = JSON.parse(JSON.stringify(laborGroupsOf(y))); fn(y); });
+
+  // הדגמים שייכנסו לסדרה עם מה שכתוב כרגע בטופס (לפני השמירה)
+  let members = [];
+  if (edit) {
+    const gs = groups.map((g) => ({ ...g }));
+    const g = gs.find((x) => x.id === edit.id);
+    if (g) g.prefixes = splitPrefixes(edit.prefixes); else gs.push({ id: edit.id, label: edit.label, prefixes: splitPrefixes(edit.prefixes) });
+    const tmp = { ...d, laborGroups: gs };
+    members = [...new Set((catalog?.models || []).filter((m) => laborGroupOf(m, tmp) === edit.id).map((m) => m.model))]
+      .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+  }
+
+  const save = () => {
+    const label = edit.label.trim(), prefixes = splitPrefixes(edit.prefixes);
+    withGroups((y) => {
+      const g = y.laborGroups.find((x) => x.id === edit.id);
+      if (g) { g.label = label; g.prefixes = prefixes; } else y.laborGroups.push({ id: edit.id, label, prefixes });
+    });
+    setEdit(null);
+  };
+  const remove = () => {
+    if (!edit.confirm) { setEdit({ ...edit, confirm: true }); return; }
+    withGroups((y) => {
+      y.laborGroups = y.laborGroups.filter((x) => x.id !== edit.id);
+      if (y.labor) delete y.labor[edit.id];
+      for (const r of y.laborRules || []) if (r.group === edit.id) delete r.group;
+    });
+    setEdit(null);
+  };
+
+  return (
+    <>
+      <div className="muted" style={{ margin: '8px 4px' }}>עלות עבודה ללא חלק, לפי עמודות המחירון ({d.laborUpdated}). שדה ריק = לא מוגדר. לחיצה על שם סדרה – שינוי השם, הדגמים שבה, או מחיקה.</div>
+      <div className="card scroll-x" style={{ padding: 8 }}>
+        <table className="grid-table">
+          <thead><tr><th>סדרה</th>{reps.map((r) => <th key={r.id}>{r.label}</th>)}</tr></thead>
+          <tbody>
+            {groups.map((g) => (
+              <tr key={g.id}>
+                <td><button className="sgrid-model" style={{ padding: '2px 0' }} onClick={() => setEdit({ id: g.id, label: g.label, prefixes: (g.prefixes || []).join(', '), auto: g.auto || '' })}>
+                  {g.label}{g.prefixes?.length ? <span>{g.prefixes.join(', ')}</span> : null}</button></td>
+                {reps.map((r) => (
+                  <td key={r.id}><input className="input sm num" inputMode="numeric" value={d.labor[g.id]?.[r.id] ?? ''}
+                    onChange={(e) => set((y) => { y.labor[g.id] = y.labor[g.id] || {}; y.labor[g.id][r.id] = numOrNull(e.target.value); })} /></td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {!edit && <div className="actions"><button className="btn primary" onClick={() => setEdit({ id: 'g' + Date.now().toString(36), label: '', prefixes: '', auto: '', isNew: true })}>{Icon.plus}<span>סדרה חדשה</span></button></div>}
+      {edit && (
+        <div className="card labor-edit" ref={box} style={{ padding: 14, marginTop: 12 }}>
+          <label className="field"><span>שם הסדרה</span>
+            <input className="input" value={edit.label} placeholder="iPhone 8 / SE" onChange={(e) => setEdit({ ...edit, label: e.target.value, confirm: false })} /></label>
+          <label className="field"><span>דגמים שהשם שלהם מתחיל ב… (כמה – מפרידים בפסיק)</span>
+            <input className="input" dir="ltr" value={edit.prefixes} placeholder="iPhone 8, iPhone SE" onChange={(e) => setEdit({ ...edit, prefixes: e.target.value, confirm: false })} /></label>
+          {edit.auto && <div className="muted">זיהוי אוטומטי: {edit.auto}. דגם שמתאים לתחילת שם של סדרה אחרת עובר אליה.</div>}
+          <div className="muted" style={{ marginTop: 6 }}>בסדרה ({members.length}): {members.length ? members.slice(0, 24).join(', ') + (members.length > 24 ? ` ועוד ${members.length - 24}` : '') : 'אין דגמים'}</div>
+          <div className="actions">
+            <button className="btn primary" disabled={!edit.label.trim()} onClick={save}>שמור</button>
+            <button className="btn" onClick={() => setEdit(null)}>ביטול</button>
+            {!edit.isNew && groups.length > 1 && <button className="btn danger" onClick={remove}>{edit.confirm ? 'למחוק את הסדרה? לחץ שוב' : 'מחק סדרה'}</button>}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function Rules({ d, set, catalog }) {
   const [draft, setDraft] = useState(null);
   useBack(!!draft, () => setDraft(null));
@@ -290,7 +352,7 @@ function Rules({ d, set, catalog }) {
             <div className="main">
               <div className="t1" style={{ fontSize: 15 }}>{r.scope === 'model' ? 'דגם' : 'סדרה'}: {r.match}</div>
               <div className="t2">
-                {r.group ? `משויך ל: ${LABOR_GROUPS.find((g) => g.id === r.group)?.label}` : ''}
+                {r.group ? `משויך ל: ${laborGroupsOf(d).find((g) => g.id === r.group)?.label || '—'}` : ''}
                 {Object.entries(r.labor || {}).filter(([, v]) => v != null && v !== '').map(([k, v]) => ` ${repairLabel(k, d)} ${fmt(v)}`).join(' ·')}
                 {r.note ? ` · ${r.note}` : ''}
               </div>
@@ -313,7 +375,7 @@ function Rules({ d, set, catalog }) {
           <label className="field"><span>שייך לעמודה בטבלה (לא חובה)</span>
             <select className="input" value={draft.group || ''} onChange={(e) => setDraft({ ...draft, group: e.target.value || undefined })}>
               <option value="">— ללא —</option>
-              {LABOR_GROUPS.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
+              {laborGroupsOf(d).map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
             </select>
           </label>
           <div className="muted">עלות עבודה ספציפית (ריק = לפי הטבלה):</div>

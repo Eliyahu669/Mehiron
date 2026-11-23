@@ -22,6 +22,7 @@ export function buildFullCatalog(allLists, cfg) {
 export function publicConfig(cfg) {
   return {
     labor: cfg.labor,
+    laborGroups: Array.isArray(cfg.laborGroups) && cfg.laborGroups.length ? cfg.laborGroups.map(({ id, label, family, families, tier, prefixes }) => ({ id, label, family: family || null, families: families || null, tier: tier || null, prefixes: prefixes || [] })) : null,
     laborRules: (cfg.laborRules || []).map(({ id, scope, match, group, labor }) => ({ id, scope, match, group: group || null, labor: labor || {} })),
     addons: cfg.addons,
     rounding: cfg.rounding,
