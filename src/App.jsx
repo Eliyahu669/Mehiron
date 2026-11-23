@@ -6,6 +6,7 @@ import { SEGMENTS, SHEETS, CATALOG_ID, defaultCatalog, migrateDeviceConfig, sort
 import { fmtStorage } from './lib/normalize.js';
 import { REPAIRS } from './lib/defaults.js';
 import { allRepairs } from './lib/repairs.js';
+import { RMODELS_ID, seedRepairModels, missingFromDevices, addRows } from './lib/rmodels.js';
 import { fmt, Fresh, Icon, daysLabel } from './ui/util.jsx';
 import ModelSheet from './ui/ModelSheet.jsx';
 import ImportSheet from './ui/ImportSheet.jsx';
@@ -89,6 +90,26 @@ export default function App({ store }) {
     const rows = defaultCatalog();
     store.initCatalog?.(rows, migrateDeviceConfig(data.config, rows, REPAIRS.map((r) => r.id))).catch(() => {});
   }, [isAdmin, full, data.ready, data.lists, data.config, store]);
+  // מנהל: רשימת הדגמים של התיקונים – נבנית פעם אחת (מהמחירונים הקיימים + רשימת המכשירים + אייפון 8–12),
+  // ואחר כך כל טלפון חדש ברשימת המכשירים נוסף אליה אוטומטית (לקבצים ולטבלאות של כל ספקי החלקים)
+  const rmSync = useRef('');
+  useEffect(() => {
+    if (!isAdmin || !full || !data.ready || !data.lists?.[CATALOG_ID]) return;
+    const devRows = data.lists[CATALOG_ID].items || [];
+    const rm = data.lists[RMODELS_ID];
+    if (!rm) {
+      if (rmSync.current === 'init') return;
+      rmSync.current = 'init';
+      const parts = (cfg.suppliers || []).filter((s) => s.type === 'parts').map((s) => data.lists[s.id]).filter(Boolean);
+      store.initList?.(RMODELS_ID, seedRepairModels(devRows, parts), 'דגמים לתיקון').catch(() => { rmSync.current = ''; });
+      return;
+    }
+    const miss = missingFromDevices(rm.items || [], devRows, cfg.repairModelsRemoved || []);
+    const sig = miss.map((m) => m.model).join('|');
+    if (!miss.length || rmSync.current === sig) return;
+    rmSync.current = sig;
+    store.saveImport({ lists: { [RMODELS_ID]: { items: addRows(rm.items || [], miss), supplierName: 'דגמים לתיקון', updatedAt: Date.now() } } }).catch(() => { rmSync.current = ''; });
+  }, [isAdmin, full, data.ready, data.lists, cfg, store]);
   // מנהל: בקשות פירוט פתוחות
   useEffect(() => (isAdmin && store.onRequests ? store.onRequests(setRequests) : undefined), [isAdmin, store]);
   const onRequest = !seeCost ? (what) => { store.createRequest({ what }).catch(() => {}); toast('הבקשה נשלחה למנהל'); } : null;

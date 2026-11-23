@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { parseMessage, mergeItems, makeItem } from '../lib/parser.js';
+import { parseMessage, mergeItems, unknownModelVariant } from '../lib/parser.js';
 import { allRepairs, repairLabel, qualitiesFor, optionName } from '../lib/repairs.js';
 import { partQuality } from '../lib/pricing.js';
 import { normText } from '../lib/normalize.js';
 import { catalogRows } from '../lib/publish.js';
+import { RMODELS_ID, rmodelsOf, matchRow, attachRow, addRows, rekeyParts, codesIn, baseKey } from '../lib/rmodels.js';
 import {
   CATALOG_ID, SEGMENTS, matchSupplierItems, applySupplierImport, reviewDefaults, rowLabel, parseStorage,
 } from '../lib/devices.js';
@@ -108,7 +109,7 @@ export default function ImportSheet({ cfg, lists, catalog, kind = null, initialT
           </div>
 
           {items && !isDev && (
-            <PartsPreview key={supplierId} items={items} setItems={setItems} opts={opts} cfg={cfg} catalog={catalog} onSaveImport={onSaveImport} old={lists?.[supplierId]?.items || []} mode={mode} supplier={supplier}
+            <PartsPreview key={supplierId} items={items} setItems={setItems} opts={opts} cfg={cfg} rmRows={rmodelsOf(lists)} onSaveImport={onSaveImport} old={lists?.[supplierId]?.items || []} mode={mode} supplier={supplier}
               busy={busy} setBusy={setBusy} confirmRemove={confirmRemove} setConfirmRemove={setConfirmRemove} toast={toast} onClose={onClose} />
           )}
           {items && isDev && (
@@ -124,12 +125,13 @@ export default function ImportSheet({ cfg, lists, catalog, kind = null, initialT
 // ---------- ספק חלקים: כל שורה מקבלת דגם, סוג תיקון ואיכות מאוחדת. דגם שלא זוהה / מילה שאולי היא איכות – לבחירה ----------
 export const partIgnoreKey = (it) => `p:${normText(it.model || it.name || it.raw || '')}`;
 
-function PartsPreview({ items, setItems, opts, cfg, catalog, onSaveImport, old, mode, supplier, busy, setBusy, confirmRemove, setConfirmRemove, toast, onClose }) {
+function PartsPreview({ items, setItems, opts, cfg, rmRows, onSaveImport, old, mode, supplier, busy, setBusy, confirmRemove, setConfirmRemove, toast, onClose }) {
   const ignored = useMemo(() => new Set((cfg.ignoredParts || []).map((x) => x.key)), [cfg.ignoredParts]);
   const [terms, setTerms] = useState({}); // מילה לא מוכרת → 'keep' | 'noise' | 'q:<id>' | 'new'
   const [newNames, setNewNames] = useState({});
   const [defQ, setDefQ] = useState(supplier?.defaultQuality || '');
-  const [skipAlways, setSkipAlways] = useState(() => new Set());
+  const [choice, setChoice] = useState({}); // דגם שלא ברשימה → { action: 'add' | 'pick' | 'skip' | 'always', pick, f: { brand, model, code } }
+  const useList = rmRows.length > 0;
 
   // ההגדרות אחרי הבחירות במסך הזה – כדי שהתצוגה תתעדכן מיד
   const nextCfg = useMemo(() => {
@@ -148,14 +150,68 @@ function PartsPreview({ items, setItems, opts, cfg, catalog, onSaveImport, old, 
     return { ...cfg, qualities, qualityNoise: noise, suppliers };
   }, [cfg, terms, newNames, defQ, supplier]);
 
+  // שיוך כל שורה לדגם ברשימת התיקונים (לפי דגם יצרן ואז לפי השם). מה שלא ברשימה – מקובץ לפי דגם, לבחירה
+  const match = useMemo(() => {
+    const groups = new Map();
+    const rows = items.map((it) => {
+      if (!(it.price > 0)) return { it, st: 'bad' };
+      if (!useList) return { it, st: it.ok ? 'ok' : it.unknownModel ? 'unknown' : 'bad', item: it };
+      const m = it.unknownModel ? null : matchRow(it, rmRows);
+      if (m?.row) return { it, st: 'ok', item: attachRow(it, m.row) };
+      const st = m?.rows ? 'ambiguous' : it.unknownModel ? 'unknown' : 'new';
+      const g = st === 'unknown' ? `u:${normText(it.model || it.name || it.raw)}` : `${st}:${it.mkey}`;
+      if (ignored.has(partIgnoreKey(it))) return { it, st: 'ignored' };
+      if (!groups.has(g)) {
+        const isSam = /samsung/i.test(it.brand || '');
+        groups.set(g, {
+          g, st, items: [], sample: it, cands: m?.rows || null,
+          def: st === 'ambiguous' ? { action: 'pick', pick: m.rows[0].key } : st === 'new'
+            ? { action: 'add', f: { brand: it.brand || '', model: it.model || '', code: isSam ? codesIn(it.raw, it.model).join(' / ') : '' } }
+            : { action: 'skip', f: { brand: '', model: '', code: '' } },
+        });
+      }
+      groups.get(g).items.push(it);
+      return { it, st, g };
+    });
+    return { rows, groups: [...groups.values()] };
+  }, [items, rmRows, useList, ignored]);
+  const ch = (g) => ({ ...g.def, ...(choice[g.g] || {}), f: { ...(g.def.f || {}), ...(choice[g.g]?.f || {}) } });
+  const rowByName = useMemo(() => new Map(rmRows.map((r) => [normText(r.model), r])), [rmRows]);
+
+  // התוצאה: שורות הרשימה החדשות + הפריטים אחרי שיוך
+  const result = useMemo(() => {
+    let list = rmRows;
+    const out = [];
+    const target = new Map();
+    for (const g of match.groups) {
+      const c = ch(g);
+      if (c.action === 'pick') { const r = rmRows.find((x) => x.key === c.pick) || rowByName.get(normText(c.pick || '')); if (r) target.set(g.g, r); }
+      if (c.action === 'add' && c.f.model.trim()) {
+        const exists = rowByName.get(normText(c.f.model));
+        if (exists) target.set(g.g, exists);
+        else {
+          const brand = c.f.brand.trim() || null;
+          const fresh = { brand, model: c.f.model.trim(), code: c.f.code.trim(), year: null, series: '' };
+          const dup = list.find((r) => baseKey(r) === baseKey(fresh) && normText(r.model) === normText(fresh.model));
+          if (dup) target.set(g.g, dup);
+          else { list = addRows(list, [fresh]); target.set(g.g, list[list.length - 1]); }
+        }
+      }
+    }
+    for (const r of match.rows) {
+      if (r.st === 'ok') out.push(r.item);
+      else if (r.g && target.has(r.g)) {
+        const row = target.get(r.g);
+        const base = r.it.unknownModel ? { ...r.it, partType: r.it.partType || opts.partType, variant: unknownModelVariant(r.it, row.model), ok: true } : r.it;
+        out.push(attachRow(base, row));
+      }
+    }
+    return { items: useList ? rekeyParts(out) : out, newRows: list.length > rmRows.length ? list.slice(rmRows.length) : [], list };
+  }, [match, choice, rmRows, rowByName, useList, opts.partType]);
+
   const view = useMemo(() => {
     const oldMap = new Map(old.map((i) => [i.key, i]));
-    const rows = items.map((it) => {
-      const skipped = it.unknownModel && (ignored.has(partIgnoreKey(it)) || skipAlways.has(it._id));
-      const q = it.ok ? partQuality({ ...it, supplierId: supplier?.id }, nextCfg) : null;
-      return { it, q, skipped, o: oldMap.get(it.key) };
-    });
-    const good = rows.filter((r) => r.it.ok);
+    const good = result.items.map((it) => ({ it, q: partQuality({ ...it, supplierId: supplier?.id }, nextCfg), o: oldMap.get(it.key) }));
     const newKeys = new Set(good.map((r) => r.it.key));
     // מילים שאולי הן איכות (לפי ההגדרות הנוכחיות – לפני הבחירות כאן)
     const unknown = new Map();
@@ -167,41 +223,35 @@ function PartsPreview({ items, setItems, opts, cfg, catalog, onSaveImport, old, 
       unknown.get(k).n++;
     }
     return {
-      rows, ok: good.length, unknown: [...unknown.values()],
-      badModel: rows.filter((r) => r.it.unknownModel && !r.skipped), skipped: rows.filter((r) => r.skipped).length,
-      bad: rows.filter((r) => !r.it.ok && !r.it.unknownModel).length,
+      good, ok: good.length, unknown: [...unknown.values()],
+      review: match.groups, skipped: match.rows.filter((r) => r.st === 'ignored').length,
+      bad: match.rows.filter((r) => r.st === 'bad'),
       noQuality: good.filter((r) => { const q0 = partQuality({ ...r.it, supplierId: supplier?.id }, { ...cfg, suppliers: [] }); return !q0.qid && !q0.note; }).length,
       added: good.filter((r) => !r.o).length,
       changed: good.filter((r) => r.o && r.o.price !== r.it.price).length,
       removed: mode === 'replace' ? old.filter((i) => !newKeys.has(i.key)).length : 0,
     };
-  }, [items, old, mode, supplier, ignored, skipAlways, nextCfg, cfg]);
+  }, [result, match, old, mode, supplier, nextCfg, cfg]);
 
-  const updateRow = (id, patch) => setItems((arr) => arr.map((it) => {
-    if (it._id !== id) return it;
-    if (patch.name != null) {
-      const n = makeItem(patch.name, it.variant, it.price, null, it.raw, opts);
-      return { ...n, _id: id };
-    }
-    const price = Number(patch.price);
-    return { ...it, price, ok: Boolean(it.model && price > 0 && !it.unknownModel) };
-  }));
-
-  const modelNames = useMemo(() => [...new Set((catalog?.models || []).map((m) => m.model))].sort((a, b) => a.localeCompare(b, 'en', { numeric: true })), [catalog]);
+  const updatePrice = (id, v) => setItems((arr) => arr.map((it) => (it._id !== id ? it : { ...it, price: Number(v), ok: Boolean(it.model && Number(v) > 0 && !it.unknownModel) })));
+  const setG = (g, patch) => setChoice((c) => ({ ...c, [g]: { ...(c[g] || {}), ...patch, f: { ...(c[g]?.f || {}), ...(patch.f || {}) } } }));
 
   const save = async () => {
     if (view.removed > 0 && !confirmRemove) { setConfirmRemove(true); return; }
     setBusy(true);
     try {
-      const merged = mergeItems(old, items.filter((i) => i.ok).map(({ _id, ...r }) => r), { replace: mode === 'replace' });
-      const newIgnored = view.rows.filter((r) => r.it.unknownModel && skipAlways.has(r.it._id))
-        .map((r) => ({ key: partIgnoreKey(r.it), label: r.it.raw || r.it.name }));
+      const merged = mergeItems(old, result.items.map(({ _id, unknownModel, ...r }) => ({ ...r, ok: Number(r.price) > 0 })), { replace: mode === 'replace' });
+      const newIgnored = match.groups.filter((g) => ch(g).action === 'always').flatMap((g) => g.items.map((it) => ({ key: partIgnoreKey(it), label: it.raw || it.name })))
+        .filter((x, i, a) => !ignored.has(x.key) && a.findIndex((y) => y.key === x.key) === i);
       const cfgChanged = Object.keys(terms).some((k) => terms[k] !== 'keep') || (defQ || '') !== (supplier?.defaultQuality || '') || newIgnored.length;
       await onSaveImport({
-        lists: { [supplier.id]: { items: merged, supplierName: supplier?.name || supplier.id } },
-        config: cfgChanged ? { ...nextCfg, ignoredParts: [...(cfg.ignoredParts || []), ...newIgnored.filter((x) => !ignored.has(x.key))] } : null,
+        lists: {
+          [supplier.id]: { items: merged, supplierName: supplier?.name || supplier.id },
+          ...(result.newRows.length ? { [RMODELS_ID]: { items: result.list, supplierName: 'דגמים לתיקון' } } : {}),
+        },
+        config: cfgChanged ? { ...nextCfg, ignoredParts: [...(cfg.ignoredParts || []), ...newIgnored] } : null,
       });
-      toast(`המחירון של ${supplier?.name} עודכן · ${view.ok} שורות${mode === 'merge' ? ' עודכנו/נוספו' : ''}`);
+      toast(`המחירון של ${supplier?.name} עודכן · ${view.ok} שורות${result.newRows.length ? ` · ${result.newRows.length} דגמים נוספו לרשימה` : ''}`);
       onClose();
     } catch (e) {
       toast('השמירה נכשלה: ' + (e?.message || e));
@@ -215,31 +265,45 @@ function PartsPreview({ items, setItems, opts, cfg, catalog, onSaveImport, old, 
         <span className="tag green">זוהו {view.ok}</span>
         <span className="tag gray">חדשים {view.added}</span>
         <span className="tag orange">מחיר השתנה {view.changed}</span>
-        {view.badModel.length > 0 && <span className="tag red">דגם לא זוהה {view.badModel.length}</span>}
+        {view.review.length > 0 && <span className="tag red">לא ברשימה {view.review.length}</span>}
         {view.unknown.length > 0 && <span className="tag orange">מילים לא מוכרות {view.unknown.length}</span>}
         {view.skipped > 0 && <span className="tag gray">דילוג קבוע {view.skipped}</span>}
-        {view.bad > 0 && <span className="tag red">בלי מחיר {view.bad}</span>}
+        {view.bad.length > 0 && <span className="tag red">בלי מחיר {view.bad.length}</span>}
         {view.removed > 0 && <span className="tag red">יוסרו {view.removed}</span>}
       </div>
 
-      {view.badModel.length > 0 && (
+      {view.review.length > 0 && (
         <>
-          <div className="section-title">דגם לא זוהה – בחר דגם, או דלג</div>
-          <datalist id="part-models">{modelNames.map((n) => <option key={n} value={n} />)}</datalist>
-          <div className="card list">
-            {view.badModel.map(({ it }) => (
-              <div key={it._id} className="preview-row bad">
-                <span>?</span>
-                <div className="nm">
-                  <input className="input" list="part-models" style={{ padding: '4px 8px', fontSize: 14 }} placeholder="בחר דגם…" defaultValue=""
-                    onBlur={(e) => e.target.value.trim() && updateRow(it._id, { name: e.target.value })} />
-                  <div className="v">"{it.raw}" · {fmt(it.price)}</div>
+          <div className="section-title">דגמים שלא ברשימת התיקונים</div>
+          <datalist id="part-models">{rmRows.map((r) => <option key={r.key} value={r.model}>{r.code ? `${r.model} (${r.code})` : r.model}</option>)}</datalist>
+          {view.review.map((g) => {
+            const c = ch(g);
+            return (
+              <div key={g.g} className="rv">
+                <div className="rv-head">
+                  <div className="t1">{g.st === 'unknown' ? `"${g.sample.raw}"` : g.sample.model}{g.items.length > 1 ? ` · ${g.items.length} שורות` : ''}</div>
+                  <div className="muted">{g.st === 'ambiguous' ? 'כמה דגמים ברשימה באותו שם – בחר' : g.st === 'unknown' ? 'הדגם לא זוהה' : 'לא ברשימת התיקונים'} · {fmt(g.sample.price)}</div>
                 </div>
-                <button className="btn" style={{ height: 30, padding: '0 8px' }} onClick={() => setSkipAlways((x) => new Set([...x, it._id]))}>דלג תמיד</button>
-                <button className="icon-btn" style={{ width: 30, height: 30 }} aria-label="דלג" onClick={() => setItems((a) => a.filter((x) => x._id !== it._id))}>{Icon.trash}</button>
+                <div className="rv-seg seg">
+                  {[['add', 'הוסף'], ['pick', 'זה דגם מהרשימה'], ['skip', 'דלג'], ['always', 'דלג תמיד']].filter(([a]) => g.st !== 'ambiguous' || a !== 'add').map(([a, l]) => (
+                    <button key={a} className={c.action === a ? 'on' : ''} onClick={() => setG(g.g, { action: a })}>{l}</button>
+                  ))}
+                </div>
+                {c.action === 'add' && (
+                  <div className="rv-form">
+                    <label className="field"><span>חברה</span><input className="input" value={c.f.brand} onChange={(e) => setG(g.g, { f: { brand: e.target.value } })} /></label>
+                    <label className="field"><span>שם הדגם</span><input className="input" value={c.f.model} onChange={(e) => setG(g.g, { f: { model: e.target.value } })} /></label>
+                    <label className="field"><span>דגם יצרן</span><input className="input" dir="ltr" value={c.f.code} onChange={(e) => setG(g.g, { f: { code: e.target.value } })} /></label>
+                  </div>
+                )}
+                {c.action === 'pick' && (g.cands
+                  ? <select className="input" value={c.pick} onChange={(e) => setG(g.g, { pick: e.target.value })}>
+                      {g.cands.map((r) => <option key={r.key} value={r.key}>{r.model}{r.code ? ` (${r.code})` : ''}</option>)}
+                    </select>
+                  : <input className="input" list="part-models" placeholder="בחר דגם…" defaultValue="" onBlur={(e) => setG(g.g, { pick: e.target.value })} />)}
               </div>
-            ))}
-          </div>
+            );
+          })}
         </>
       )}
 
@@ -272,16 +336,23 @@ function PartsPreview({ items, setItems, opts, cfg, catalog, onSaveImport, old, 
       )}
 
       <div className="card list">
-        {view.rows.filter((r) => !r.it.unknownModel).sort((a, b) => Number(a.it.ok) - Number(b.it.ok)).map(({ it, q, o }) => (
-          <div key={it._id} className={'preview-row' + (it.ok ? '' : ' bad')}>
-            <span>{it.ok ? '✓' : '✗'}</span>
+        {view.bad.map(({ it }) => (
+          <div key={it._id} className="preview-row bad">
+            <span>✗</span>
+            <div className="nm"><div className="t1" dir="auto">{it.raw}</div><div className="v">בלי מחיר</div></div>
+            <input className="input sm num" inputMode="numeric" defaultValue={it.price || ''} onBlur={(e) => Number(e.target.value) > 0 && updatePrice(it._id, e.target.value)} />
+            <button className="icon-btn" style={{ width: 30, height: 30 }} onClick={() => setItems((a) => a.filter((x) => x._id !== it._id))}>{Icon.trash}</button>
+          </div>
+        ))}
+        {view.good.map(({ it, q, o }) => (
+          <div key={it._id || it.key} className="preview-row">
+            <span>✓</span>
             <div className="nm">
-              <input className="input" style={{ padding: '4px 8px', fontSize: 14 }} defaultValue={it.name || it.raw}
-                onBlur={(e) => e.target.value !== (it.name || it.raw) && updateRow(it._id, { name: e.target.value })} />
-              <div className="v">{[repairLabel(it.partType, cfg), q ? optionName(q) : it.variant].filter(Boolean).join(' · ')}{o && o.price !== it.price ? ` · היה ${fmt(o.price)}` : ''}{!it.ok ? ` · "${it.raw}"` : ''}</div>
+              <div className="t1">{it.model}</div>
+              <div className="v">{[repairLabel(it.partType, cfg), optionName(q)].join(' · ')}{o && o.price !== it.price ? ` · היה ${fmt(o.price)}` : ''}</div>
             </div>
             <input className="input sm num" inputMode="numeric" defaultValue={it.price}
-              onBlur={(e) => Number(e.target.value) !== it.price && updateRow(it._id, { price: e.target.value })} />
+              onBlur={(e) => Number(e.target.value) !== it.price && updatePrice(it._id, e.target.value)} />
             <button className="icon-btn" style={{ width: 30, height: 30 }} onClick={() => setItems((a) => a.filter((x) => x._id !== it._id))}>{Icon.trash}</button>
           </div>
         ))}

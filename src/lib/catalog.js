@@ -2,6 +2,7 @@
 import { identify, modelKey, searchTokens, normText, tokenize } from './normalize.js';
 import { findRepairIn, effectivePartType, stripRepairWords } from './repairs.js';
 import { sheetOf } from './devices.js';
+import { modelOfRow, baseKey } from './rmodels.js';
 
 /** רק מחירונים של ספקים שמוגדרים בהגדרות – ספק שנמחק לא נספר במחירים */
 export function activeLists(lists, cfg) {
@@ -17,9 +18,11 @@ const PHONE_SEGMENTS = new Set(['entry', 'mid', 'flagship', 'premium']);
  * קטלוג התיקונים: דגמים ממחירוני ספקי החלקים, ועוד כל הטלפונים שברשימת המכשירים (rows) –
  * כדי שגם דגם בלי חלק מספק יופיע עם מחיר עבודה. המכשירים למכירה עצמם מנוהלים ב-devices.js
  */
-export function buildCatalog(lists, rows = null, cfg = null) {
+export function buildCatalog(lists, rows = null, cfg = null, rmRows = null) {
   const parts = [];
   const models = new Map();
+  // רשימת הדגמים של התיקונים קובעת את הדגמים (שם, דגם יצרן). דגם שיש לו חלק ואינו ברשימה – נוסף כמו קודם
+  for (const r of rmRows || []) models.set(r.key, modelOfRow(r));
   const partIndex = new Map(); // `${mkey}|${partType}` → חלקים
   for (const [supplierId, doc] of Object.entries(lists || {})) {
     for (const it of doc.items || []) {
@@ -29,7 +32,8 @@ export function buildCatalog(lists, rows = null, cfg = null) {
       const k = `${x.mkey}|${x.partType}`;
       if (!partIndex.has(k)) partIndex.set(k, []);
       partIndex.get(k).push(x);
-      if (!models.has(x.mkey)) {
+      if (models.has(x.mkey)) models.get(x.mkey).hasParts = true;
+      else {
         models.set(x.mkey, {
           mkey: x.mkey, brand: x.brand, model: x.model, family: x.family, tier: x.tier,
           devKind: x.devKind, hasParts: true, sheet: sheetOf(x.brand), tokens: searchTokens(`${x.brand || ''} ${x.model}`),
@@ -37,8 +41,15 @@ export function buildCatalog(lists, rows = null, cfg = null) {
       }
     }
   }
+  const byBase = new Map();
+  if (rmRows?.length) for (const m of models.values()) if (m.rid) { const b = baseKey(m); if (!byBase.has(b)) byBase.set(b, m); }
   for (const r of rows || []) {
     if (!PHONE_SEGMENTS.has(r.segment)) continue;
+    if (rmRows?.length) { // הטלפונים כבר ברשימת התיקונים – רק שנה וסדרה למיון
+      const m = byBase.get(modelKey(identify(r.model, r.brand)));
+      if (m && m.year == null && r.year != null) { m.year = r.year; m.series = m.series || r.series || ''; }
+      continue;
+    }
     const id = identify(r.model, r.brand);
     const mkey = modelKey(id);
     if (!id.model) continue;

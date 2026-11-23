@@ -155,3 +155,18 @@ test('רשימת המכשירים נוצרת פעם אחת בלבד (גם בענ
   assert.equal(await local.initCatalog(rows.slice(0, 3), null), false);
   assert.equal(data.lists[CATALOG_ID].items.length, rows.length);
 });
+
+test('רשימה שנוצרת פעם אחת (הדגמים לתיקון): לא דורסת רשימה קיימת', async () => {
+  const fb = fakeFirebase();
+  const a = await session(fb);
+  fb.login({ uid: 'u1', email: 'owner@gmail.com' });
+  await tick(20);
+  assert.equal(await a.store.initList('_rmodels', [{ id: 'm1', key: 'apple|iphone 13', brand: 'Apple', model: 'iPhone 13', code: '' }], 'דגמים לתיקון'), true);
+  await tick(20);
+  assert.equal(a.st.data.lists._rmodels.items[0].model, 'iPhone 13');
+  assert.equal(await a.store.initList('_rmodels', [], 'דגמים לתיקון'), false);
+  const local = await createStore({ seed: { lists: {} } });
+  assert.equal(await local.initList('_rmodels', [{ id: 'm1', key: 'k', model: 'x' }], 'דגמים לתיקון'), true);
+  assert.equal(await local.initList('_rmodels', [], 'דגמים לתיקון'), false);
+});
+

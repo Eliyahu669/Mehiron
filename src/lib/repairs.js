@@ -200,3 +200,38 @@ export function manualPart({ model, repair, qid, frame, price, variant = null, p
     updatedAt: now, prevPrice: prev ? (changed ? prev.price : prev.prevPrice ?? null) : null, changedAt: changed ? now : prev.changedAt ?? now,
   };
 }
+
+// ---------- עמודות החלקים בקובץ "חלקי חילוף" ובטבלת הספק ----------
+// לכל עמודה: סוג תיקון, איכות (id מהרשימה; '' = בלי שם איכות; '*' = כל איכות), ומסגרת:
+// '' = ללא / לא צוין, 'with' = כולל מסגרת, '*' = לא משנה (המחיר הזול מביניהם)
+const col = (label, repair, qid = '*', frame = '*') => ({ label, repair, qid, frame });
+const SCREEN_Q = [['', 'מסך'], ['copy', 'מסך תחליפי'], ['incell', 'מסך אינסל'], ['oled', 'מסך OLED'], ['softoled', 'מסך Soft OLED'],
+  ['refurb', 'מסך מקורי משופץ'], ['service', 'מסך מקורי סרוויס'], ['original', 'מסך מקורי']];
+const withFrames = () => SCREEN_Q.flatMap(([qid, label]) => [col(label, 'screen', qid, ''), col(`${label} כולל מסגרת`, 'screen', qid, 'with')]);
+const ANDROID = () => [...withFrames(), col('מסך חיצוני', 'outer'), col('סוללה', 'battery'), col('שקע טעינה', 'port'), col('גב אחורי', 'back'), col('מצלמה', 'camera'), col('החלפת גוף', 'housing')];
+export const DEFAULT_PART_COLUMNS = {
+  // כמו בקובץ הדוגמה
+  apple: [
+    col('מסך תחליפי', 'screen', 'copy'), col('מסך אינסל', 'screen', 'incell'), col('מסך OLED', 'screen', 'oled'), col('מסך Soft OLED', 'screen', 'softoled'),
+    col('מסך מקורי משופץ', 'screen', 'refurb'), col('מסך מקורי סרוויס', 'screen', 'service'), col('מסך מקורי', 'screen', 'original'),
+    col('סוללה חליפית', 'battery', 'copy'), col('סוללה מקורית', 'battery', 'original'), col('שקע טעינה', 'port'), col('מצלמה אחורית', 'camera'),
+    col('גב תחליפי', 'back', 'copy'), col('גב מקורי', 'back', 'original'),
+  ],
+  // עמודה לכל איכות מסך + "כולל מסגרת" (במחירון של סמסונג יש לרוב כמה מסכים לדגם)
+  samsung: ANDROID(),
+  xiaomi: ANDROID(),
+  other: ANDROID(),
+};
+export function partColumns(sheet, cfg) {
+  const own = cfg?.partColumns?.[sheet];
+  return Array.isArray(own) && own.length ? own : DEFAULT_PART_COLUMNS[sheet] || DEFAULT_PART_COLUMNS.other;
+}
+const frameOk = (cf, f) => cf === '*' || (cf === 'with' ? f === 'with' : f !== 'with');
+/** באיזו עמודה מופיע פריט (סוג תיקון + איכות + מסגרת). -1 = אין עמודה מתאימה */
+export function columnOf(cols, repair, qid, frame) {
+  let i = cols.findIndex((c) => c.repair === repair && c.qid === (qid || '') && frameOk(c.frame, frame));
+  if (i < 0) i = cols.findIndex((c) => c.repair === repair && c.qid === '*' && frameOk(c.frame, frame));
+  return i;
+}
+/** האיכות והמסגרת של פריט חדש שנכתב בעמודה */
+export const columnTarget = (c) => ({ repair: c.repair, qid: c.qid === '*' ? '' : c.qid, frame: c.frame === 'with' ? 'with' : null });

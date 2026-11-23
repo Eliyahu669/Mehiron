@@ -92,6 +92,8 @@ async def main():
             print('בחירה מרובה: שינוי מחיר גורף ומחיקה')
             await pg.click('.icon-btn[title="הגדרות"]'); await pg.wait_for_timeout(200)
             await pg.click('.sheet .pill:has-text("פריטים")'); await pg.click('.sheet .pill:has-text("ספק חלקים")'); await pg.wait_for_timeout(200)
+            check(await pg.locator('.sheet table.sgrid').count() == 1, 'ספק חלקים נפתח בטבלה (כמו הקובץ שלו)')
+            await pg.click('.sheet .seg button:has-text("רשימת פריטים")'); await pg.wait_for_timeout(150)
             await pg.fill('input[placeholder="חיפוש פריט…"]', 'a54'); await pg.wait_for_timeout(200)
             before = await pg.locator('.sheet .card.list .row').all_inner_texts()
             await pg.click('.sheet button:has-text("בחירה")'); await pg.wait_for_timeout(100)
@@ -141,61 +143,79 @@ async def main():
             await pg.go_back(); await pg.wait_for_timeout(600)
             check(pg.url == 'about:blank', f'אחורה שני: יצאנו ({pg.url})')
 
-            print('אקסל: ייצוא, עריכה (כולל הערה בתא מתוכנה אחרת) וייבוא חזרה')
+            print('אקסל: קובץ לכל ספק – "חלקי חילוף" לספק חלקים ומחירון מכשירים לספק מכשירים')
             import openpyxl
             from openpyxl.comments import Comment
             pg3 = await ctx.new_page(); pg3.on('pageerror', lambda e: errs.append(str(e)))
-            await pg3.goto(URL); await pg3.wait_for_timeout(700)
+            await pg3.goto(URL); await pg3.wait_for_timeout(900)
             await pg3.click('.icon-btn[title="הגדרות"]'); await pg3.click('.sheet .pill:has-text("פריטים")'); await pg3.wait_for_timeout(200)
+            sup_name = 'ספק חלקים (מחירון סמסונג)'
             async with pg3.expect_download() as dl_info:
-                await pg3.click('.sheet button:has-text("ייצוא לאקסל")')
+                await pg3.click('.sheet button:has-text("ייצוא הקובץ של הספק")')
             dl = await dl_info.value
-            xpath = f'{SHOTS}/export.xlsx'; await dl.save_as(xpath)
-            check(dl.suggested_filename.startswith('מחירון-') and dl.suggested_filename.endswith('.xlsx'), f'שם הקובץ: {dl.suggested_filename}')
+            xpath = f'{SHOTS}/export-parts.xlsx'; await dl.save_as(xpath)
+            check(dl.suggested_filename.startswith(f'מחירון תיקונים - {sup_name} - ') and dl.suggested_filename.endswith('.xlsx'), f'שם הקובץ: {dl.suggested_filename}')
             await pg3.wait_for_timeout(200)
-            check('הקובץ ירד' in await pg3.inner_text('.toast'), 'הודעת ייצוא')
+            check('הקובץ של' in await pg3.inner_text('.toast'), 'הודעת ייצוא')
             wb = openpyxl.load_workbook(xpath)
-            check(wb.sheetnames[:8] == ['תיקונים Apple', 'תיקונים Samsung', 'תיקונים Xiaomi', 'תיקונים אחרים', 'Apple', 'Samsung', 'Xiaomi', 'אחרים'], f'גיליונות: {wb.sheetnames}')
-            ws = wb['תיקונים Samsung']; h = {c.value: c.column for c in ws[1]}
-            check(list(h)[:6] == ['יצרן', 'דגם', 'שנת השקה', 'סוג תיקון', 'איכות', 'מסגרת'], f'עמודות התיקונים: {list(h)[:8]}')
-            sup_col = next(k for k in h if str(k).startswith('מחיר ספק ')); sup_name = sup_col.replace('מחיר ספק ', '')
-            r2 = next(r for r in range(2, ws.max_row + 1) if ws.cell(r, h[sup_col]).value)
-            ws.cell(r2, h[sup_col]).value = 999
+            check(wb.sheetnames[:3] == ['חלקי חילוף Apple', 'חלקי חילוף Samsung', 'חלקי חילוף Xiaomi'], f'גיליונות: {wb.sheetnames}')
+            check([c.value for c in wb['חלקי חילוף Apple'][1]][:4] == ['דגם', 'מסך תחליפי', 'מסך אינסל', 'מסך OLED'], 'עמודות אפל כמו בקובץ הדוגמה')
+            ws = wb['חלקי חילוף Samsung']; h = {c.value: c.column for c in ws[1]}
+            check(list(h)[:4] == ['דגם', 'דגם יצרן', 'מסך', 'מסך כולל מסגרת'], f'עמודות סמסונג: {list(h)[:6]}')
+            pcols = [k for k in h if k not in ('דגם', 'דגם יצרן', 'מזהה', '_מקור')]
+            priced = [r for r in range(2, ws.max_row + 1) if any(ws.cell(r, h[c]).value for c in pcols)]
+            r2, r3 = priced[0], priced[1]
+            c2 = next(c for c in pcols if ws.cell(r2, h[c]).value)
+            ws.cell(r2, h[c2]).value = 999
             ws.cell(r2, h['דגם']).comment = Comment('לבדוק', 'אליהו')
-            r3 = next(r for r in range(r2 + 1, ws.max_row + 1) if ws.cell(r, h[sup_col]).value)
             deleted = ws.cell(r3, h['דגם']).value
             ws.delete_rows(r3, 1)
             n = ws.max_row + 1
-            for k, v in {'יצרן': 'Samsung', 'דגם': 'Galaxy A99', 'סוג תיקון': 'סוללה', 'איכות': 'מקורית', sup_col: 123}.items(): ws.cell(n, h[k]).value = v
-            wd = wb['Apple']; hd = {c.value: c.column for c in wd[1]}
-            check(list(hd)[:7] == ['יצרן', 'רמות גימור/סגמנטציה', 'סדרה', 'שם הדגם', 'נפחי אחסון זמינים', 'גרסה', 'שנת השקה'], f'עמודות המכשירים: {list(hd)[:9]}')
-            dev_row = next(r for r in range(2, wd.max_row + 1) if wd.cell(r, hd['מחיר ללקוח']).value and str(wd.cell(r, hd['שם הדגם']).value).startswith('iPhone 1'))
-            dev_model = wd.cell(dev_row, hd['שם הדגם']).value
-            wd.cell(dev_row, hd['מחיר ללקוח']).value = 7777
-            epath = f'{SHOTS}/edited.xlsx'; wb.save(epath)
-            await pg3.set_input_files('.sheet input[type=file]', epath); await pg3.wait_for_timeout(1200)
+            ws.cell(n, h['דגם']).value = 'Galaxy A99'; ws.cell(n, h['דגם יצרן']).value = 'A996'; ws.cell(n, h['סוללה']).value = 123
+            epath = f'{SHOTS}/edited-parts.xlsx'; wb.save(epath)
+            await pg3.set_input_files('.sheet input[type=file]', epath); await pg3.wait_for_timeout(1500)
             t = await pg3.inner_text('.xl-card') if await pg3.locator('.xl-card').count() else ''
-            check('עודכן פריט אחד' in t and 'נוסף פריט אחד' in t and 'יימחק פריט אחד' in t and 'מחיר ידני ללקוח: 1' in t, f'תצוגה מקדימה: {t[:200]!r}')
+            check('עודכנה שורה אחת' in t and 'נוסף דגם אחד' in t and 'יימחקו המחירים של שורה אחת' in t, f'תצוגה מקדימה: {t[:260]!r}')
             await pg3.click('.xl-sec.red summary'); await pg3.wait_for_timeout(100)
             check(deleted in await pg3.inner_text('.xl-sec.red'), f'רשימת המחיקות כוללת את {deleted}')
             await pg3.screenshot(path=f'{SHOTS}/e2e-excel-preview.png')
             await back(pg3, 300)
             check(await pg3.locator('.xl-card').count() == 0 and await pg3.locator('.sheet').count() == 1, 'אחורה סגר את התצוגה המקדימה ונשאר בהגדרות')
-            await pg3.set_input_files('.sheet input[type=file]', epath); await pg3.wait_for_timeout(1200)
+            await pg3.set_input_files('.sheet input[type=file]', epath); await pg3.wait_for_timeout(1500)
             await pg3.click('.xl-card button:has-text("אשר ושמור")'); await pg3.wait_for_timeout(150)
             check('לחץ שוב' in await pg3.inner_text('.xl-card'), 'עם מחיקות – נדרשת לחיצה שנייה')
-            await pg3.click('.xl-card button:has-text("לחץ שוב")'); await pg3.wait_for_timeout(600)
+            await pg3.click('.xl-card button:has-text("לחץ שוב")'); await pg3.wait_for_timeout(700)
             toast = await pg3.inner_text('.toast'); check('הייבוא נשמר' in toast, f'הודעה: {toast}')
             check(await pg3.locator('.xl-card').count() == 0, 'התצוגה המקדימה נסגרה')
-            await pg3.click(f'.sheet .pills .pill:has-text("{sup_name}")'); await pg3.fill('input[placeholder="חיפוש פריט…"]', 'a99'); await pg3.wait_for_timeout(250)
-            rows = await pg3.locator('.sheet .card.list .row').all_inner_texts()
-            check(len(rows) == 1 and '123' in rows[0] and 'סוללה' in rows[0], f'הפריט החדש נוסף: {rows}')
-            await pg3.click('text=‹ סגור'); await pg3.wait_for_timeout(300)
-            await pg3.click('.mode-seg button:has-text("מכשירים")'); await pg3.click('.search input'); await pg3.keyboard.type(dev_model, delay=10); await pg3.wait_for_timeout(300)
-            await pg3.click('.card.list .row >> nth=0'); await pg3.wait_for_timeout(300)
-            check('7,777' in await pg3.inner_text('.sheet'), f'מחיר ידני ללקוח מופיע ב-{dev_model}')
-            await back(pg3); await pg3.click('.mode-seg button:has-text("תיקונים")'); await pg3.wait_for_timeout(150)
-            await pg3.close()
+            await pg3.click('.sheet .pills .pill:has-text("Samsung")'); await pg3.fill('input[placeholder="חיפוש דגם / דגם יצרן…"]', 'a99'); await pg3.wait_for_timeout(250)
+            row = pg3.locator('.sgrid tbody tr >> nth=0')
+            check('Galaxy A99' in await row.inner_text() and 'A996' in await row.inner_text(), 'הדגם החדש נוסף לטבלה עם דגם היצרן')
+            check('123' in [await i.input_value() for i in await row.locator('input').all()], 'המחיר של הסוללה בטבלה')
+            await pg3.screenshot(path=f'{SHOTS}/e2e-grid.png')
+            # טבלת הספק: מחיר בתא נשמר מיד
+            cell = row.locator('input >> nth=0'); await cell.fill('77'); await cell.press('Enter'); await pg3.wait_for_timeout(400)
+            check('נשמר' in await pg3.inner_text('.toast'), 'מחיר מהטבלה נשמר')
+            # ספק מכשירים: קובץ עם עמודת המחיר שלו
+            await pg3.click('.sheet .pills .pill:has-text("אר.פי מובייל")'); await pg3.wait_for_timeout(200)
+            async with pg3.expect_download() as dl_info:
+                await pg3.click('.sheet button:has-text("ייצוא הקובץ של הספק")')
+            dl = await dl_info.value
+            dpath = f'{SHOTS}/export-devices.xlsx'; await dl.save_as(dpath)
+            check(dl.suggested_filename.startswith('מחירון מכשירים - אר.פי מובייל - '), f'שם הקובץ: {dl.suggested_filename}')
+            wb = openpyxl.load_workbook(dpath)
+            wd = wb['Apple']; hd = {c.value: c.column for c in wd[1]}
+            check(list(hd)[:9] == ['יצרן', 'רמות גימור/סגמנטציה', 'סדרה', 'שם הדגם', 'נפחי אחסון זמינים', 'גרסה', 'שנת השקה', 'מחיר', 'הערות'], f'עמודות המכשירים: {list(hd)[:10]}')
+            dev_row = next(r for r in range(2, wd.max_row + 1) if wd.cell(r, hd['מחיר']).value)
+            dev_model = wd.cell(dev_row, hd['שם הדגם']).value
+            wd.cell(dev_row, hd['מחיר']).value = 7777
+            epath = f'{SHOTS}/edited-devices.xlsx'; wb.save(epath)
+            await pg3.set_input_files('.sheet input[type=file]', epath); await pg3.wait_for_timeout(1500)
+            t = await pg3.inner_text('.xl-card'); check('עודכנה שורה אחת' in t and 'אר.פי מובייל' in t, f'תצוגה מקדימה: {t[:160]!r}')
+            await pg3.click('.xl-card button:has-text("אשר ושמור")'); await pg3.wait_for_timeout(700)
+            await pg3.fill('input[placeholder="חיפוש דגם…"]', dev_model); await pg3.wait_for_timeout(250)
+            vals = [await i.input_value() for i in await pg3.locator('.sheet .dm-row input').all()]
+            check('7777' in vals, f'המחיר החדש בטבלה של הספק: {vals[:6]}')
+            await back(pg3); await pg3.close()
 
             print('רווח מכשירים: מינימום בשקלים לרמת גימור ואחוז רווח לשורה')
             pg4 = await ctx.new_page(); pg4.on('pageerror', lambda e: errs.append(str(e)))
@@ -270,13 +290,17 @@ async def main():
             await pg6.click('text=עדכן מחירון'); await pg6.wait_for_timeout(200)
             check(await pg6.locator('.sheet .seg button.on:has-text("עדכון חלקי")').count() == 1, 'ספק חלקים – ברירת המחדל עדכון חלקי (לא מוחק את השאר)')
             await pg6.fill('.sheet textarea', '17 pro incell 150\nGalaxy A54 מקורי סאני 210'); await pg6.click('.sheet button:has-text("פענח")'); await pg6.wait_for_timeout(300)
-            tags = await pg6.inner_text('.sheet .stat'); check('דגם לא זוהה 1' in tags, f'"17 pro" בלי יצרן – לבחירה: {tags!r}')
+            tags = await pg6.inner_text('.sheet .stat'); check('זוהו 1' in tags and 'לא ברשימה 1' in tags, f'"17 pro" בלי יצרן – לבחירה: {tags!r}')
+            check(await pg6.locator('.rv .rv-seg button.on:has-text("דלג")').count() == 1, 'דגם שלא זוהה – ברירת המחדל דלג')
+            await pg6.click('.rv .rv-seg button:has-text("זה דגם מהרשימה")')
             await pg6.fill('input[list="part-models"]', 'iPhone 17 Pro'); await pg6.keyboard.press('Tab'); await pg6.wait_for_timeout(200)
-            tags = await pg6.inner_text('.sheet .stat'); check('זוהו 2' in tags and 'דגם לא זוהה' not in tags, f'אחרי בחירת דגם: {tags!r}')
+            tags = await pg6.inner_text('.sheet .stat'); check('זוהו 2' in tags, f'אחרי בחירת דגם: {tags!r}')
+            await pg6.screenshot(path=f'{SHOTS}/e2e-parts-review.png')
             await pg6.click('.sheet button:has-text("שמור ועדכן")'); await pg6.wait_for_timeout(500)
             await pg6.click('.search input'); await pg6.keyboard.type('אייפון 17 פרו מסך', delay=10); await pg6.wait_for_timeout(300)
             await pg6.click('.card.list .row >> nth=0'); await pg6.wait_for_timeout(300)
-            check('400' in await pg6.inner_text('.quote >> nth=0'), 'אינסל: הזול מבין שני הספקים (150) → 400')
+            t = await pg6.inner_text('.quote >> nth=0')
+            check('אינסל\n400' in t and 'סטנדרטי' not in t, f'"incell" מהשורה נשמר כאינסל: הזול מבין שני הספקים (150) → 400: {t[:120]!r}')
             await back(pg6)
             await pg6.click('.icon-btn[title="הגדרות"]'); await pg6.click('.sheet .pill:has-text("סוגי תיקון ואיכויות")'); await pg6.wait_for_timeout(200)
             t = await pg6.inner_text('.sheet')
