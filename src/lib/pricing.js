@@ -1,5 +1,5 @@
 // מנוע תמחור: חלק + עבודה לתיקונים, עלות + אחוז רווח למכשירים, עיגול לכפולות של 10
-import { LABOR_GROUPS } from './defaults.js';
+import { laborGroupsOf } from './defaults.js';
 import { resolveQuality, optionName, groupId, optionKey, repairLabel, qualitiesFor } from './repairs.js';
 import { tokenize } from './normalize.js';
 
@@ -10,9 +10,37 @@ export function roundPrice(v, cfg) {
   return f(Math.round((v / step) * 1e6) / 1e6) * step; // בלי שגיאות שבר עשרוני (4050.0000000000005 לא מתעגל ל-4060)
 }
 
-export function groupFor(model) {
+// סדרה לפי תחילת השם: "Galaxy A5" → A54, A55; "iPhone 8" → iPhone 8, 8 Plus. מילת יצרן (אייפון / גלקסי / שיאומי) מחייבת את היצרן
+const BRAND_OF = { iphone: 'Apple', ip: 'Apple', apple: 'Apple', galaxy: 'Samsung', samsung: 'Samsung', xiaomi: 'Xiaomi' };
+const prefixCache = new Map();
+function prefixParts(prefix) {
+  let v = prefixCache.get(prefix);
+  if (!v) {
+    const t = tokenize(prefix);
+    v = { brands: [...new Set(t.filter((x) => BRAND_OF[x]).map((x) => BRAND_OF[x]))], rest: t.filter((x) => !BRAND_OF[x]).join(' ') };
+    prefixCache.set(prefix, v);
+  }
+  return v;
+}
+
+/** 0 = השם לא מתחיל כך; אחרת – ככל שהתחילית ארוכה יותר, ההתאמה חזקה יותר */
+export function prefixScore(prefix, model) {
+  const { brands, rest } = prefixParts(String(prefix || ''));
+  if (!brands.length && !rest) return 0;
+  if (brands.length && !brands.includes(model.brand)) return 0;
+  if (!rest) return 1;
+  const m = tokenize(model.model).filter((x) => !BRAND_OF[x]).join(' ');
+  return m.startsWith(rest) ? rest.length + 1 : 0;
+}
+
+/** הסדרה של הדגם בטבלת העבודה: קודם תחילת שם (הארוכה ביותר מכל הסדרות), אחר כך הזיהוי האוטומטי */
+export function groupFor(model, cfg = null) {
   if (!model) return null;
-  const g = LABOR_GROUPS.find((g) => (g.families ? g.families.includes(model.family) : g.family === model.family) && (!g.tier || g.tier === model.tier));
+  const groups = laborGroupsOf(cfg);
+  let best = null, score = 0;
+  for (const g of groups) for (const p of g.prefixes || []) { const s = prefixScore(p, model); if (s > score) { score = s; best = g.id; } }
+  if (best) return best;
+  const g = groups.find((x) => (x.families ? x.families.includes(model.family) : x.family && x.family === model.family) && (!x.tier || x.tier === model.tier));
   return g ? g.id : null;
 }
 
@@ -35,21 +63,30 @@ export function qualityKey(q) {
 export const repairGroupKey = (mkey, repair, variant) => `${mkey}|${repair}|${qualityKey(variant)}`;
 
 /** עלות עבודה לדגם ולסוג תיקון. מחזיר { amount, source } או null אם לא מוגדר */
-export function laborFor(model, repair, cfg) {
+function rulesFor(model, cfg) {
   const rules = (cfg.laborRules || []).filter((r) => ruleMatches(r, model.model));
   // דגם מדויק קודם, אחר כך הסדרה עם השם הארוך ביותר
-  rules.sort((a, b) => (a.scope === 'model' ? -1 : 0) - (b.scope === 'model' ? -1 : 0) || canon(b.match).length - canon(a.match).length);
-  let group = groupFor(model);
+  return rules.sort((a, b) => (a.scope === 'model' ? -1 : 0) - (b.scope === 'model' ? -1 : 0) || canon(b.match).length - canon(a.match).length);
+}
+
+/** הסדרה בפועל: חריג עם "שייך לעמודה" גובר על תחילת השם ועל הזיהוי האוטומטי */
+export function laborGroupOf(model, cfg, rules = rulesFor(model, cfg)) {
+  const ids = new Set(laborGroupsOf(cfg).map((g) => g.id));
+  const r = rules.find((x) => x.group && ids.has(x.group));
+  return r ? r.group : groupFor(model, cfg);
+}
+
+export function laborFor(model, repair, cfg) {
+  const rules = rulesFor(model, cfg);
+  const group = laborGroupOf(model, cfg, rules);
   for (const r of rules) {
     if (r.labor && r.labor[repair] != null && r.labor[repair] !== '') {
       return { amount: Number(r.labor[repair]), source: r.scope === 'model' ? `חריג לדגם ${r.match}` : `חריג לסדרה ${r.match}`, group };
     }
   }
-  const g = rules.find((r) => r.group);
-  if (g) group = g.group;
   const v = group && cfg.labor?.[group]?.[repair];
   if (v == null || v === '') return null;
-  const label = LABOR_GROUPS.find((x) => x.id === group)?.label;
+  const label = laborGroupsOf(cfg).find((x) => x.id === group)?.label;
   return { amount: Number(v), source: `טבלת עבודה: ${label}`, group };
 }
 

@@ -3,14 +3,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { identify, tokenize } from '../src/lib/normalize.js';
 import { extractPrice, parseMessage, mergeItems, manualItem, detectPartType } from '../src/lib/parser.js';
-import { laborFor, repairQuote, roundPrice, qualityKey, freshness, afterVat } from '../src/lib/pricing.js';
+import { laborFor, groupFor, repairQuote, roundPrice, qualityKey, freshness, afterVat } from '../src/lib/pricing.js';
 import { defaultCatalog, rowQuote, rowKey, matchSupplierItems, applySupplierImport, normalizeVersion, migrateDeviceConfig, priceIndex, buildDeviceModels, sheetOf, ignoreKey } from '../src/lib/devices.js';
 import { buildCatalog, activeLists, searchModels, detectRepair } from '../src/lib/catalog.js';
 import { buildPublicCatalog, buildFullCatalog, publicConfig, liteCatalog, getRepairQuote, getDeviceQuotes } from '../src/lib/publish.js';
 import { pack, unpack, readPriceListDoc, readCatalogDoc, MAX_FIELD } from '../src/lib/packing.js';
 import { bulkPrice, applyBulkPrice, uniqueKey } from '../src/lib/items.js';
 import { DEFAULT_CONFIG as CFG } from '../src/lib/defaults.js';
-import { mergeConfig } from '../src/lib/store.js';
+import { mergeConfig, mergePublicConfig } from '../src/lib/store.js';
 import { resolveQuality, optionName, optionKey, parseReply, manualPart, allRepairs, stripRepairWords } from '../src/lib/repairs.js';
 import { splitMulti, unknownModelVariant } from '../src/lib/parser.js';
 import { seedRepairModels, matchRow, codesIn, missingFromDevices, addRows, attachRow, rekeyParts } from '../src/lib/rmodels.js';
@@ -613,4 +613,41 @@ test('חלק לדגם שלא זוהה ששויך לדגם מהרשימה: מיל
   assert.equal(unknownModelVariant(b, 'iPhone 17 Pro Max'), 'אולד');
   const [c] = parseMessage('17 pro 150', { kind: 'parts' });
   assert.equal(unknownModelVariant(c, 'iPhone 17 Pro'), '');
+});
+
+test('סדרות בטבלת העבודה: שינוי שם, סדרה חדשה לפי תחילת השם, פיצול סדרה ומחיקה', () => {
+  const groups = JSON.parse(JSON.stringify(mergeConfig(null).laborGroups || []));
+  assert.equal(groups.length, 0, 'כל עוד לא נשמר – הסדרות המקוריות');
+  const iph = (model, tier) => ({ brand: 'Apple', model, family: 'iphone', tier });
+  const sam = (model, family, tier) => ({ brand: 'Samsung', model, family, tier });
+  const cfg = mergeConfig({
+    laborGroups: [
+      { id: 'iphone:new', label: 'iPhone 14–15', family: 'iphone', tier: 'new', prefixes: [] },
+      { id: 'iphone:old', label: 'iPhone ישנים', family: 'iphone', tier: 'old', prefixes: ['iPhone 8', 'אייפון SE'] },
+      { id: 'g1', label: 'iPhone 16–18', prefixes: ['iPhone 16', 'iPhone 17', 'iPhone 18', 'iPhone Air'] },
+      { id: 'g2', label: 'Galaxy A5x', prefixes: ['Galaxy A5'] },
+      { id: 'galaxy:a', label: 'Galaxy A', family: 'galaxy-a', tier: 'a', prefixes: [] },
+      { id: 'g3', label: 'Xiaomi 14', prefixes: ['Xiaomi 14'] },
+    ],
+    labor: { g1: { screen: 300 }, g2: { screen: 140 }, g3: { screen: 170 } },
+  });
+  assert.equal(groupFor(iph('iPhone 15 Pro', 'new'), cfg), 'iphone:new');
+  assert.equal(groupFor(iph('iPhone 17 Pro Max', 'new'), cfg), 'g1', 'תחילת שם גוברת על הזיהוי האוטומטי');
+  assert.equal(groupFor(iph('iPhone 8 Plus', null), cfg), 'iphone:old');
+  assert.equal(groupFor(iph('iPhone SE', null), cfg), 'iphone:old', 'תחילת שם בעברית');
+  assert.equal(groupFor(sam('Galaxy A54', 'galaxy-a', 'a'), cfg), 'g2');
+  assert.equal(groupFor(sam('Galaxy A15', 'galaxy-a', 'a'), cfg), 'galaxy:a');
+  assert.equal(groupFor(iph('iPhone 14', 'new'), cfg), 'iphone:new', '"Xiaomi 14" לא תופס אייפון');
+  assert.equal(groupFor({ brand: 'Xiaomi', model: 'Xiaomi 14T', family: 'xiaomi', tier: 'std' }, cfg), 'g3');
+  assert.equal(groupFor(sam('Galaxy S24', 'galaxy-s', 's'), cfg), null, 'סדרה שנמחקה – אין עלות עבודה');
+  const l = laborFor(iph('iPhone 17 Pro', 'new'), 'screen', cfg);
+  assert.equal(l.amount, 300); assert.equal(l.source, 'טבלת עבודה: iPhone 16–18');
+  assert.equal(laborFor(iph('iPhone 8', null), 'screen', cfg).amount, 150, 'אייפון 8 מקבל את המחיר של הסדרה');
+  // חריג עם "שייך לעמודה" גובר על תחילת השם
+  const withRule = { ...cfg, laborRules: [{ id: 'x', scope: 'model', match: 'Galaxy A54', group: 'galaxy:a' }] };
+  assert.equal(laborFor(sam('Galaxy A54', 'galaxy-a', 'a'), 'screen', withRule).amount, 120);
+  // העובדים מקבלים את הסדרות עם תחילות השם
+  const pcfg = mergePublicConfig(JSON.parse(JSON.stringify(publicConfig(cfg))));
+  assert.equal(laborFor(iph('iPhone 17', 'new'), 'screen', pcfg).amount, 300);
+  assert.equal(laborFor(iph('iPhone 17', 'new'), 'screen', mergePublicConfig(publicConfig(mergeConfig(null)))).amount, 250);
 });

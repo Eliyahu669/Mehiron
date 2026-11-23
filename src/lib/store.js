@@ -35,6 +35,7 @@ export function mergeConfig(c) {
     marginOverrides: c.marginOverrides || {},
     rounding: { ...d.rounding, ...(c.rounding || {}) },
     freshness: { ...d.freshness, ...(c.freshness || {}) },
+    laborGroups: Array.isArray(c.laborGroups) && c.laborGroups.length ? c.laborGroups : null,
     laborRules: c.laborRules || d.laborRules,
     addons: c.addons || d.addons,
     suppliers: c.suppliers || d.suppliers,
