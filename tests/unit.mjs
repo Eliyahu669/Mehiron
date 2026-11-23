@@ -12,7 +12,10 @@ import { bulkPrice, applyBulkPrice, uniqueKey } from '../src/lib/items.js';
 import { DEFAULT_CONFIG as CFG } from '../src/lib/defaults.js';
 import { mergeConfig } from '../src/lib/store.js';
 import { resolveQuality, optionName, optionKey, parseReply, manualPart, allRepairs, stripRepairWords } from '../src/lib/repairs.js';
-import { splitMulti } from '../src/lib/parser.js';
+import { splitMulti, unknownModelVariant } from '../src/lib/parser.js';
+import { seedRepairModels, matchRow, codesIn, missingFromDevices, addRows, attachRow, rekeyParts } from '../src/lib/rmodels.js';
+import { partCells, setPartCell } from '../src/lib/partcells.js';
+import { DEFAULT_PART_COLUMNS, partColumns } from '../src/lib/repairs.js';
 
 const devices = (t) => parseMessage(t, { kind: 'devices' });
 const parts = (t, partType = 'screen') => parseMessage(t, { kind: 'parts', partType });
@@ -541,3 +544,73 @@ test('סוגי תיקון שהמנהל הוסיף: בחיפוש, בתיקוני�
   assert.deepEqual([rq3.labor, rq3.laborOnly], [null, null], 'באייפון אין "מסך חיצוני"');
 });
 
+// ---------- רשימת הדגמים לתיקון וקובץ "חלקי חילוף" ----------
+test('רשימת דגמים לתיקון: מהמחירונים הקיימים (עם דגם היצרן של הספק), מרשימת המכשירים, ואייפון 8–12', () => {
+  const pa = { items: mergeItems([], parseMessage('Samsung\tGalaxy A\tA12 (A125)\tמקורי סאני\t₪150\nSamsung\tGalaxy A\tA13 (A135)\tמקורי סאני\t₪160\niPhone 15 סוללה מקורית ₪200', { kind: 'parts', partType: 'screen' })) };
+  const rows = seedRepairModels(defaultCatalog(), [pa]);
+  const by = (m) => rows.find((r) => r.model === m);
+  assert.equal(by('Galaxy A12').code, 'A125');
+  assert.equal(by('Galaxy A12').key, 'samsung|galaxy a12', 'המפתח של הדגם נשאר – מחירים ידניים לא הולכים לאיבוד');
+  assert.equal(by('iPhone 15').key, 'apple|iphone 15');
+  assert.ok(by('iPhone 8/SE') && by('iPhone XS Max') && by('iPhone 12 Pro Max'));
+  assert.equal(by('iPhone XR').year, 2018);
+  assert.ok(by('iPhone 17 Pro'), 'טלפון מרשימת המכשירים');
+  assert.equal(rows.filter((r) => r.model === 'iPhone 15').length, 1, 'בלי כפילויות');
+  assert.equal(new Set(rows.map((r) => r.key)).size, rows.length, 'מפתחות ייחודיים');
+  assert.ok(!rows.some((r) => /Galaxy Tab|Watch|Buds/i.test(r.model)), 'רק טלפונים');
+  // מכשיר חדש ברשימת המכשירים → נוסף לתיקונים; דגם שנמחק מהתיקונים לא חוזר
+  const dev = [...defaultCatalog(), { id: 'x1', brand: 'Samsung', segment: 'mid', series: 'Galaxy A', model: 'Galaxy A58', storage: 128, version: '', year: 2027 }];
+  assert.deepEqual(missingFromDevices(rows, dev).map((r) => r.model), ['Galaxy A58']);
+  assert.deepEqual(missingFromDevices(rows, dev, ['samsung|galaxy a58']), []);
+});
+
+test('שורה של ספק → דגם ברשימה: קודם לפי דגם יצרן (A12 / A12 Nacho), אחר כך לפי השם', () => {
+  let rows = addRows([], [{ brand: 'Samsung', model: 'Galaxy A12', code: 'A125' }]);
+  rows = addRows(rows, [{ brand: 'Samsung', model: 'Galaxy A12 Nacho', code: 'A127' }, { brand: 'Apple', model: 'iPhone 13', code: '' }]);
+  assert.deepEqual(rows.map((r) => r.key), ['samsung|galaxy a12', 'samsung|galaxy a12#A127', 'apple|iphone 13'], 'אותו שם עם דגם יצרן אחר – מפתח נפרד');
+  const one = (t) => parseMessage(t, { kind: 'parts', partType: 'screen' })[0];
+  assert.equal(matchRow(one('Galaxy A12 A127F מקורי ₪150'), rows).row.model, 'Galaxy A12 Nacho');
+  assert.equal(matchRow(one('Galaxy A12 (A125F) מקורי ₪140'), rows).row.model, 'Galaxy A12');
+  assert.equal(matchRow(one('{A127F} Galaxy A12 ₪150'), rows).row.model, 'Galaxy A12 Nacho');
+  assert.equal(matchRow(one('אייפון 13 מסך ₪200'), rows).row.model, 'iPhone 13');
+  assert.equal(matchRow(one('Galaxy A54 ₪200'), rows), null, 'לא ברשימה – לבחירה');
+  const two = addRows([], [{ brand: 'Samsung', model: 'Galaxy A12', code: '' }, { brand: 'Samsung', model: 'Galaxy A12', code: 'A127' }]);
+  assert.equal(matchRow(one('Galaxy A12 ₪150'), two).rows.length, 2, 'שני דגמים באותו שם בלי דגם יצרן בשורה – לבחירה');
+  assert.deepEqual(codesIn('Galaxy Note 20 N980F / N981B (5G)', 'Galaxy Note 20'), ['N980F', 'N981B']);
+  // שיוך: הפריט מקבל את המפתח והשם של הדגם ברשימה
+  const it = attachRow(one('Galaxy A12 A127F מקורי ₪150'), rows[1]);
+  assert.deepEqual([it.mkey, it.model], ['samsung|galaxy a12#A127', 'Galaxy A12 Nacho']);
+  assert.equal(rekeyParts([it, { ...it }])[1].key, `${it.mkey}|screen|${it.variant}#2`);
+});
+
+test('טבלת ספק חלקים: כל פריט בעמודה שלו, וכתיבה בתא מעדכנת / יוצרת / מוחקת', () => {
+  const cfg = mergeConfig(null);
+  assert.deepEqual(partColumns('apple', cfg).map((c) => c.label).slice(0, 3), ['מסך תחליפי', 'מסך אינסל', 'מסך OLED']);
+  assert.ok(DEFAULT_PART_COLUMNS.samsung.some((c) => c.label === 'מסך מקורי סרוויס כולל מסגרת'));
+  const rows = addRows([], [{ brand: 'Samsung', model: 'Galaxy A54', code: '' }, { brand: 'Apple', model: 'iPhone 17 Pro', code: '' }]);
+  const items = mergeItems([], parseMessage('Galaxy A54 מקורי סאני ₪200\nGalaxy A54 מקורי סאני כולל מסגרת ₪230\nGalaxy A54 ללא מסגרת ₪100\niPhone 17 Pro OLED ₪250\niPhone 17 Pro Soft OLED ₪300', { kind: 'parts', partType: 'screen' }));
+  const c = partCells(items, 'pa', rows, cfg);
+  const ci = (sheet, label) => partColumns(sheet, cfg).findIndex((x) => x.label === label);
+  assert.equal(c.get(rows[0], ci('samsung', 'מסך מקורי סרוויס'))[0].price, 200);
+  assert.equal(c.get(rows[0], ci('samsung', 'מסך מקורי סרוויס כולל מסגרת'))[0].price, 230);
+  assert.equal(c.get(rows[0], ci('samsung', 'מסך'))[0].price, 100, 'בלי שם איכות, ללא מסגרת → "מסך"');
+  assert.equal(c.get(rows[1], ci('apple', 'מסך OLED'))[0].price, 250);
+  assert.equal(c.get(rows[1], ci('apple', 'מסך Soft OLED'))[0].price, 300);
+  let r = setPartCell(items, 'pa', rows[1], ci('apple', 'מסך אינסל'), 150, cfg, 5);
+  assert.equal(r.changed, true);
+  assert.equal(partCells(r.items, 'pa', rows, cfg).get(rows[1], ci('apple', 'מסך אינסל'))[0].price, 150);
+  r = setPartCell(r.items, 'pa', rows[0], ci('samsung', 'מסך מקורי סרוויס'), null, cfg, 6);
+  assert.equal(partCells(r.items, 'pa', rows, cfg).get(rows[0], ci('samsung', 'מסך מקורי סרוויס')).length, 0);
+  assert.equal(setPartCell(r.items, 'pa', rows[1], ci('apple', 'מסך OLED'), 250, cfg).changed, false, 'אותו מחיר – בלי שינוי');
+});
+
+
+test('חלק לדגם שלא זוהה ששויך לדגם מהרשימה: מילת האיכות מהשורה נשמרת', () => {
+  const [a] = parseMessage('17 pro incell 150', { kind: 'parts' });
+  assert.equal(a.unknownModel, true);
+  assert.equal(unknownModelVariant(a, 'iPhone 17 Pro'), 'Incell');
+  const [b] = parseMessage('17 פרו מקס אולד 250', { kind: 'parts' });
+  assert.equal(unknownModelVariant(b, 'iPhone 17 Pro Max'), 'אולד');
+  const [c] = parseMessage('17 pro 150', { kind: 'parts' });
+  assert.equal(unknownModelVariant(c, 'iPhone 17 Pro'), '');
+});

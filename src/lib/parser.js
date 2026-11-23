@@ -1,5 +1,5 @@
 // פירוק הודעת מחירון של ספק (טקסט חופשי מוואטסאפ, או טבלה מ-PDF / גוגל שיטס) לשורות מובנות
-import { identify, modelKey, displayName, tokenize, fmtStorage } from './normalize.js';
+import { identify, modelKey, displayName, tokenize, fmtStorage, normText } from './normalize.js';
 import { customRepairOf, resolveQuality } from './repairs.js';
 
 const STORAGE = new Set([16, 32, 64, 128, 256, 512, 1024]);
@@ -142,6 +142,13 @@ const NOT_QUALITY = new Set(['note', 'plus', 'pro', 'max', 'ultra', 'mini', 'lit
 const partsExtra = (extra) => String(extra || '').split(' ').filter(Boolean)
   .filter((t) => /[\u0590-\u05ff]/.test(t) || (/^[a-z]{2,}$/i.test(t) && !MODEL_WORDS.has(t.toLowerCase()) && !NOT_QUALITY.has(t.toLowerCase())))
   .map((t) => PART_TAGS[t] || t).join(' ');
+
+/** חלק לדגם שלא זוהה ("17 pro incell") ששויך לדגם מהרשימה: המילים שאינן שם הדגם הן האיכות */
+export function unknownModelVariant(item, rowModel) {
+  const model = new Set(normText(rowModel).split(' '));
+  const extra = partsExtra(normText(item.model || item.name).split(' ').filter((t) => !model.has(t)).join(' '));
+  return fixQuality([item.variant, extra].filter(Boolean).join(' '));
+}
 
 // שורה עם כמה מחירים: "אינסל 150, אולד 250, מקורי סרוויס 1170" → שלוש שורות
 export function splitMulti(line) {

@@ -28,6 +28,8 @@ export function mergeConfig(c) {
     qualities: { ...(c.qualities || {}) },
     qualityNoise: c.qualityNoise || [],
     ignoredParts: c.ignoredParts || [],
+    partColumns: { ...(c.partColumns || {}) },
+    repairModelsRemoved: c.repairModelsRemoved || [],
     marginMin: { ...(c.marginMin || {}) },
     marginMax: { ...(c.marginMax || {}) },
     marginOverrides: c.marginOverrides || {},
@@ -103,6 +105,13 @@ function localStore(seed) {
     async initCatalog(rows, config) {
       if (state.lists[CATALOG_ID]) return false;
       state = { ...state, lists: { ...state.lists, [CATALOG_ID]: { items: rows.map(slim), updatedAt: Date.now(), supplierName: 'רשימת מכשירים' } }, ...(config ? { config: mergeConfig(config) } : {}) };
+      persist();
+      return true;
+    },
+    /** פעם ראשונה: שומר רשימה (למשל הדגמים של התיקונים) – רק אם עדיין אין */
+    async initList(id, items, supplierName) {
+      if (state.lists[id]) return false;
+      state = { ...state, lists: { ...state.lists, [id]: { items: items.map(slim), updatedAt: Date.now(), supplierName } } };
       persist();
       return true;
     },
@@ -258,6 +267,13 @@ async function cloudStore(firebaseConfig, sdk = null) {
       batch.set(fs.doc(db, 'pricelists', CATALOG_ID), clean({ z: pack(rows.map(slim), 'רשימת המכשירים'), v: 2, count: rows.length, updatedAt: Date.now(), supplierName: 'רשימת מכשירים' }));
       if (config) batch.set(fs.doc(db, 'app', 'config'), clean(config));
       await batch.commit();
+      return true;
+    },
+    /** פעם ראשונה: שומר רשימה – רק אם בשרת עדיין אין (לא סומכים על המטמון המקומי) */
+    async initList(id, items, supplierName) {
+      const cur = await fs.getDocFromServer(fs.doc(db, 'pricelists', id));
+      if (cur.exists()) return false;
+      await fs.setDoc(fs.doc(db, 'pricelists', id), clean({ z: pack(items.map(slim), supplierName), v: 2, count: items.length, updatedAt: Date.now(), supplierName }));
       return true;
     },
     /** מנהל בלבד: מפרסם לעובדים קטלוג מחירים סופיים. נכתב רק אם משהו השתנה */

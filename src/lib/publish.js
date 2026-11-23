@@ -3,6 +3,7 @@ import { buildCatalog, activeLists } from './catalog.js';
 import { repairQuote, laborFor, roundPrice } from './pricing.js';
 import { allRepairs, repairLabel } from './repairs.js';
 import { searchTokens } from './normalize.js';
+import { rmodelsOf } from './rmodels.js';
 import { CATALOG_ID, defaultCatalog, priceIndex, rowQuote, buildDeviceModels, sheetOf } from './devices.js';
 
 /** רשימת המכשירים השמורה (או ההתחלתית, אם עדיין לא נשמרה) */
@@ -12,7 +13,7 @@ export const catalogRows = (lists) => lists?.[CATALOG_ID]?.items || defaultCatal
 export function buildFullCatalog(allLists, cfg) {
   const lists = activeLists(allLists, cfg);
   const rows = catalogRows(allLists);
-  const cat = buildCatalog(lists, rows, cfg);
+  const cat = buildCatalog(lists, rows, cfg, rmodelsOf(allLists));
   const prices = priceIndex(lists, cfg);
   return { ...cat, lite: false, rows, prices, devModels: buildDeviceModels(rows, prices) };
 }

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { manualItem } from '../lib/parser.js';
 import { allRepairs, repairLabel, optionName } from '../lib/repairs.js';
 import DevicesManager from './DevicesManager.jsx';
+import SupplierGrid from './SupplierGrid.jsx';
 import { searchTokens } from '../lib/normalize.js';
 import { fmt, Icon, daysLabel } from './util.jsx';
 import { freshness, partQuality } from '../lib/pricing.js';
@@ -17,10 +18,12 @@ const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 const DEVICES = '__devices'; // "רשימת מכשירים" בין הספקים
 
 export default function ItemsManager({ cfg, lists, catalog, store, toast, focus, onConfigSaved }) {
-  const suppliers = (cfg.suppliers || []).filter((s) => s.type === 'parts'); // מחירי ספקי המכשירים נמצאים ברשימת המכשירים
-  const [supplierId, setSupplierId] = useState(focus?.row ? DEVICES : focus?.supplierId || suppliers[0]?.id || DEVICES);
+  // "רשימת מכשירים", ואחריה כל ספק – לכל ספק טבלה כמו הקובץ שלו (ובספק חלקים גם רשימת הפריטים)
+  const suppliers = [...(cfg.suppliers || []).filter((s) => s.type === 'parts'), ...(cfg.suppliers || []).filter((s) => s.type !== 'parts')];
+  const [supplierId, setSupplierId] = useState(focus?.row ? DEVICES : focus?.supplierId || suppliers.find((s) => s.type === 'parts')?.id || DEVICES);
   const supplier = suppliers.find((s) => s.id === supplierId);
   const kind = supplier?.type === 'parts' ? 'parts' : 'devices';
+  const [view, setView] = useState(focus?.key ? 'list' : 'grid'); // ספק חלקים: טבלה / רשימת פריטים
   const items = lists?.[supplierId]?.items || [];
   const [q, setQ] = useState('');
   const [edit, setEdit] = useState(() => {
@@ -57,17 +60,17 @@ export default function ItemsManager({ cfg, lists, catalog, store, toast, focus,
     try {
       const ExcelJS = await loadExcel();
       const now = Date.now();
-      const { wb, counts } = buildWorkbook(ExcelJS, lists, cfg, now);
+      const { wb, counts } = buildWorkbook(ExcelJS, lists, cfg, supplierId, now);
       const buf = await wb.xlsx.writeBuffer();
       const url = URL.createObjectURL(new Blob([buf], { type: XLSX_TYPE }));
       const a = document.createElement('a');
       a.href = url;
-      a.download = exportFileName(now);
+      a.download = exportFileName(supplier, now);
       document.body.appendChild(a);
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 60000);
-      toast(`הקובץ ירד · ${counts.repairs} תיקונים · ${counts.devices} מכשירים`);
+      toast(`הקובץ של ${supplier.name} ירד · ${counts.rows} שורות · ${counts.prices} מחירים`);
     } catch (e) { toast('הייצוא נכשל: ' + (e?.message || e)); }
     finally { setXlBusy(''); }
   };
@@ -81,7 +84,7 @@ export default function ItemsManager({ cfg, lists, catalog, store, toast, focus,
       const ExcelJS = await loadExcel();
       const wb = new ExcelJS.Workbook();
       await wb.xlsx.load(await file.arrayBuffer());
-      setXl({ book: readWorkbook(wb, cfg), fileName: file.name, at: Date.now() });
+      setXl({ book: readWorkbook(wb, cfg, supplierId), fileName: file.name, at: Date.now() });
       setXlConfirm(false); setEdit(null); setSel(null); setBulk(null);
     } catch { toast('לא ניתן לקרוא את הקובץ – צריך קובץ אקסל בפורמט ‎.xlsx'); }
     finally { setXlBusy(''); }
@@ -90,7 +93,7 @@ export default function ItemsManager({ cfg, lists, catalog, store, toast, focus,
   const onConfirmImport = async () => {
     if (!plan?.hasChanges) { setXl(null); return; }
     const s = plan.summary;
-    if (s.deleted > 0 && !xlConfirm) { setXlConfirm(true); return; }
+    if ((s.deleted > 0 || s.cleared > 0) && !xlConfirm) { setXlConfirm(true); return; }
     setXlConfirm(false);
     setXlBusy('save');
     setSaving(plan);
@@ -98,7 +101,7 @@ export default function ItemsManager({ cfg, lists, catalog, store, toast, focus,
       await store.saveImport({ lists: plan.lists, config: plan.config });
       if (plan.config) onConfigSaved?.(plan.config);
       const ov = s.overridesSet + s.overridesCleared, mg = s.marginsSet + s.marginsCleared;
-      toast(['הייבוא נשמר', s.updated && `עודכנו ${s.updated}`, s.added && `נוספו ${s.added}`, s.deleted && `נמחקו ${s.deleted}`, ov && `מחירים ללקוח ${ov}`, mg && `אחוזי רווח ${mg}`].filter(Boolean).join(' · '));
+      toast(['הייבוא נשמר', s.updated && `עודכנו ${s.updated}`, s.added && `נוספו ${s.added}`, s.deleted && `נמחקו ${s.deleted}`, s.cleared && `מחירים נמחקו ל-${s.cleared}`, ov && `מחירים ללקוח ${ov}`, mg && `אחוזי רווח ${mg}`].filter(Boolean).join(' · '));
       setXl(null);
     } catch (err) { toast('השמירה נכשלה: ' + (err?.message || err)); }
     finally { setXlBusy(''); setSaving(null); }
@@ -178,20 +181,28 @@ export default function ItemsManager({ cfg, lists, catalog, store, toast, focus,
 
   return (
     <>
-      {!edit && !sel && (
-        <div className="xl-bar">
-          <button className="btn" disabled={!!xlBusy} onClick={onExport}>{Icon.download}<span>{xlBusy === 'export' ? 'מכין קובץ…' : 'ייצוא לאקסל'}</span></button>
-          <button className="btn" disabled={!!xlBusy} onClick={() => fileRef.current?.click()}>{Icon.upload}<span>{xlBusy === 'read' ? 'קורא קובץ…' : 'ייבוא מאקסל'}</span></button>
-          <input ref={fileRef} type="file" accept={`.xlsx,${XLSX_TYPE}`} hidden onChange={onPickFile} />
-        </div>
-      )}
       <div className="pills" style={{ paddingTop: 8 }}>
         <button className={'pill' + (supplierId === DEVICES ? ' on' : '')} onClick={() => { setSupplierId(DEVICES); setEdit(null); setSel(null); setBulk(null); }}>רשימת מכשירים</button>
         {suppliers.map((s) => <button key={s.id} className={'pill' + (s.id === supplierId ? ' on' : '')} onClick={() => { setSupplierId(s.id); setEdit(null); setSel(null); setBulk(null); }}>{s.name}</button>)}
       </div>
+      {supplier && !edit && !sel && (
+        <div className="xl-bar">
+          <button className="btn" disabled={!!xlBusy} onClick={onExport}>{Icon.download}<span>{xlBusy === 'export' ? 'מכין קובץ…' : 'ייצוא הקובץ של הספק'}</span></button>
+          <button className="btn" disabled={!!xlBusy} onClick={() => fileRef.current?.click()}>{Icon.upload}<span>{xlBusy === 'read' ? 'קורא קובץ…' : 'ייבוא קובץ'}</span></button>
+          <input ref={fileRef} type="file" accept={`.xlsx,${XLSX_TYPE}`} hidden onChange={onPickFile} />
+        </div>
+      )}
+      {kind === 'parts' && supplier && !edit && !sel && (
+        <div className="seg" style={{ marginTop: 8 }}>
+          <button className={view === 'grid' ? 'on' : ''} onClick={() => setView('grid')}>טבלה</button>
+          <button className={view === 'list' ? 'on' : ''} onClick={() => setView('list')}>רשימת פריטים</button>
+        </div>
+      )}
 
       {supplierId === DEVICES ? (
         <DevicesManager cfg={cfg} lists={lists} catalog={catalog} store={store} toast={toast} focusRow={focus?.row} onConfigSaved={onConfigSaved} />
+      ) : supplier && (kind === 'devices' || view === 'grid') && !edit ? (
+        <SupplierGrid key={supplierId} cfg={cfg} lists={lists} supplier={supplier} store={store} toast={toast} onConfigSaved={onConfigSaved} />
       ) : edit ? (
         <div className="card" style={{ padding: 14, marginTop: 8 }}>
           <div className="t1" style={{ fontWeight: 700, marginBottom: 4 }}>{edit.key != null ? 'עריכת פריט' : 'פריט חדש'} · {supplier?.name}</div>
@@ -290,15 +301,15 @@ function XlPreview({ plan, fileName, busy, confirm, onConfirm, onCancel }) {
   const many = (n, one, other) => (n === 1 ? one : other.replace('#', n));
   return (
     <div className="card xl-card">
-      <div className="t1" style={{ fontWeight: 700 }}>ייבוא מאקסל – לפני שמירה</div>
+      <div className="t1" style={{ fontWeight: 700 }}>ייבוא מאקסל{s.supplier ? ` · ${s.supplier}` : ''} – לפני שמירה</div>
       <div className="muted">{fileName}{when ? ` · יוצא ב-${when}` : ''}</div>
       <div className="xl-sum">{plan.hasChanges ? 'אלה השינויים שיישמרו:' : 'לא נמצאו שינויים בקובץ.'}</div>
-      <Sec title={many(s.updated, 'עודכן פריט אחד', 'עודכנו # פריטים')} hint={s.priceChanged ? `${s.priceChanged} במחיר ספק` : ''} rows={d.updated}
+      <Sec title={many(s.updated, 'עודכנה שורה אחת', 'עודכנו # שורות')} hint={s.priceChanged ? `${s.priceChanged} מחירים` : ''} rows={d.updated}
         render={(x) => <><div className="main">{x.name}<div className="sub">{[x.what.length ? `שונה: ${x.what.join(', ')}` : '', where(x)].filter(Boolean).join(' · ')}</div></div>
           {x.after != null && <span className="num">{x.before !== x.after ? `${fmt(x.before)} → ${fmt(x.after)}` : fmt(x.after)}</span>}</>} />
-      <Sec title={many(s.added, 'נוסף פריט אחד', 'נוספו # פריטים')} rows={d.added}
+      <Sec title={many(s.added, s.kind === 'parts' ? 'נוסף דגם אחד (לכל ספקי החלקים)' : 'נוסף מכשיר אחד לרשימה', s.kind === 'parts' ? 'נוספו # דגמים (לכל ספקי החלקים)' : 'נוספו # מכשירים לרשימה')} rows={d.added}
         render={(x) => <><div className="main">{x.name}<div className="sub">{where(x)}</div></div>{x.price != null && <span className="num">{fmt(x.price)}</span>}</>} />
-      <Sec cls="red" title={many(s.deleted, 'יימחק פריט אחד', 'יימחקו # פריטים')} hint="נמחקו מהקובץ" rows={d.deleted}
+      <Sec cls="red" title={s.cleared ? many(s.cleared, 'יימחקו המחירים של שורה אחת', 'יימחקו המחירים של # שורות') : many(s.deleted, 'יימחק פריט אחד', 'יימחקו # פריטים')} hint="השורות נמחקו מהקובץ (הדגם עצמו נשאר ברשימה)" rows={d.deleted}
         render={(x) => <><div className="main">{x.name}<div className="sub">{x.supplier}</div></div>{x.price != null && <span className="num">{fmt(x.price)}</span>}</>} />
       <Sec title={`מחיר ידני ללקוח: ${s.overridesSet + s.overridesCleared}`} rows={d.overrides}
         render={(x) => <><div className="main">{x.name}</div><span className="num">{x.value == null ? 'אוטומטי' : fmt(x.value)}</span></>} />
@@ -313,7 +324,7 @@ function XlPreview({ plan, fileName, busy, confirm, onConfirm, onCancel }) {
         {plan.hasChanges ? (
           <>
             <button className={'btn ' + (confirm ? 'danger confirm' : 'primary')} disabled={busy} onClick={onConfirm}>
-              {busy ? 'שומר…' : confirm ? `לחץ שוב – כולל מחיקת ${s.deleted}` : 'אשר ושמור'}</button>
+              {busy ? 'שומר…' : confirm ? `לחץ שוב – כולל מחיקה ב-${s.deleted + (s.cleared || 0)} שורות` : 'אשר ושמור'}</button>
             <button className="btn" disabled={busy} onClick={onCancel}>ביטול</button>
           </>
         ) : <button className="btn primary" onClick={onCancel}>סגור</button>}

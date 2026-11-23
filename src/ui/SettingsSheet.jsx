@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { REPAIRS, LABOR_GROUPS } from '../lib/defaults.js';
-import { allRepairs, repairLabel, qualitiesFor, qualityLabel, FRAME, DEFAULT_QUALITIES } from '../lib/repairs.js';
+import { allRepairs, repairLabel, qualitiesFor, qualityLabel, FRAME, DEFAULT_QUALITIES, partColumns } from '../lib/repairs.js';
+import { SHEETS } from '../lib/devices.js';
 import { SEGMENTS, rowLabel } from '../lib/devices.js';
 import { fmt, Icon } from './util.jsx';
 import ItemsManager from './ItemsManager.jsx';
@@ -245,6 +246,8 @@ function RepairTypes({ d, set }) {
         {own && <button className="btn" onClick={() => set((y) => { delete y.qualities[rid]; })}>{DEFAULT_QUALITIES[rid] ? 'חזרה לרשימה ההתחלתית' : 'חזרה לברירת המחדל'}</button>}
       </div>
 
+      <PartColumns d={d} set={set} reps={reps} />
+
       {(d.qualityNoise || []).length > 0 && (
         <>
           <div className="section-title">מילים שאינן איכות</div>
@@ -393,3 +396,48 @@ function Users({ store, toast, requests, onClose }) {
     </>
   );
 }
+
+// העמודות של קובץ "חלקי חילוף" ושל טבלת הספק – לכל חברה
+function PartColumns({ d, set, reps }) {
+  const [sh, setSh] = useState('apple');
+  const cols = partColumns(sh, d);
+  const own = Array.isArray(d.partColumns?.[sh]) && d.partColumns[sh].length > 0;
+  const editC = (fn) => set((y) => { y.partColumns = y.partColumns || {}; const list = partColumns(sh, y).map((c) => ({ ...c })); fn(list); y.partColumns[sh] = list; });
+  return (
+    <>
+      <div className="section-title">עמודות בקובץ "חלקי חילוף" ובטבלת הספק</div>
+      <div className="muted" style={{ margin: '0 4px 8px' }}>לכל חברה – אילו חלקים מופיעים כעמודות. לכל עמודה: סוג התיקון, האיכות והמסגרת שהיא מייצגת. מחיר שלא מתאים לאף עמודה נשאר באפליקציה ולא מופיע בקובץ.</div>
+      <div className="pills">{SHEETS.map((x) => <button key={x.id} className={'pill' + (sh === x.id ? ' on' : '')} onClick={() => setSh(x.id)}>{x.label}</button>)}</div>
+      <div className="card list" style={{ marginTop: 8 }}>
+        {cols.map((c, i) => (
+          <div key={i} className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+            <input className="input" style={{ flex: '1 1 140px' }} value={c.label} aria-label="שם העמודה" onChange={(e) => editC((l) => { l[i].label = e.target.value; })} />
+            <select className="input" style={{ flex: '1 1 100px' }} value={c.repair} aria-label="סוג תיקון" onChange={(e) => editC((l) => { l[i].repair = e.target.value; l[i].qid = '*'; })}>
+              {reps.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+            </select>
+            <select className="input" style={{ flex: '1 1 110px' }} value={c.qid} aria-label="איכות" onChange={(e) => editC((l) => { l[i].qid = e.target.value; })}>
+              <option value="*">כל איכות (הזול)</option>
+              <option value="">בלי שם איכות</option>
+              {qualitiesFor(c.repair, d).map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+            </select>
+            <select className="input" style={{ flex: '1 1 110px' }} value={c.frame} aria-label="מסגרת" onChange={(e) => editC((l) => { l[i].frame = e.target.value; })}>
+              <option value="*">מסגרת: לא משנה</option>
+              <option value="">ללא מסגרת / לא צוין</option>
+              <option value="with">{FRAME.with}</option>
+            </select>
+            <span style={{ display: 'flex', gap: 4 }}>
+              <button className="icon-btn" aria-label="למעלה" disabled={i === 0} onClick={() => editC((l) => { [l[i - 1], l[i]] = [l[i], l[i - 1]]; })}>↑</button>
+              <button className="icon-btn" aria-label="למטה" disabled={i === cols.length - 1} onClick={() => editC((l) => { [l[i + 1], l[i]] = [l[i], l[i + 1]]; })}>↓</button>
+              <button className="icon-btn" aria-label="מחק עמודה" onClick={() => editC((l) => { l.splice(i, 1); })}>{Icon.trash}</button>
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="actions">
+        <button className="btn" onClick={() => editC((l) => { l.push({ label: 'עמודה חדשה', repair: 'screen', qid: '*', frame: '*' }); })}>{Icon.plus}<span>עמודה</span></button>
+        {own && <button className="btn" onClick={() => set((y) => { delete y.partColumns[sh]; })}>חזרה לעמודות ההתחלתיות</button>}
+      </div>
+    </>
+  );
+}
+

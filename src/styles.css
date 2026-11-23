@@ -225,3 +225,16 @@ textarea.input { min-height: 180px; resize: vertical; line-height: 1.5; }
 .pe-row .input { padding: 8px 6px; font-size: 14px; min-width: 0; }
 .pe-row .icon-btn { width: 34px; height: 34px; }
 .rv-q { display: grid; gap: 6px; }
+
+/* טבלת ספק (כמו הקובץ שלו) */
+.grid-wrap { overflow: auto; max-height: 70vh; margin-top: 8px; border-radius: 14px; background: var(--card); border: 1px solid var(--line); }
+.sgrid { border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.sgrid th, .sgrid td { border-bottom: 1px solid var(--line); border-left: 1px solid var(--line); padding: 0; }
+.sgrid thead th { position: sticky; top: 0; z-index: 2; background: var(--bg, #f2f2f7); font-weight: 600; padding: 6px 4px; min-width: 64px; max-width: 90px; white-space: normal; line-height: 1.2; text-align: center; }
+.sgrid .stick { position: sticky; right: 0; z-index: 1; background: var(--card); min-width: 110px; max-width: 130px; }
+.sgrid thead .stick { z-index: 3; background: var(--bg, #f2f2f7); }
+.sgrid-model { all: unset; cursor: pointer; display: block; padding: 6px 8px; font-weight: 600; text-align: start; color: var(--blue, #007aff); }
+.sgrid-model span { display: block; font-weight: 400; font-size: 11px; color: var(--text2); direction: ltr; text-align: right; }
+.sgrid-in { width: 64px; border: 0; background: transparent; padding: 8px 4px; text-align: center; font-size: 14px; outline: none; }
+.sgrid-in:focus { background: rgba(0,122,255,.08); }
+.dm-row .input.sm { width: 96px; }

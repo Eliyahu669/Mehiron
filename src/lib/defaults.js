@@ -60,6 +60,8 @@ export const DEFAULT_CONFIG = {
   qualities: {},
   qualityNoise: [],
   ignoredParts: [],
+  partColumns: {}, // עמודות קובץ "חלקי חילוף" לכל חברה (ריק = ברירת המחדל ב-repairs.js)
+  repairModelsRemoved: [], // דגמים שנמחקו מרשימת התיקונים – לא חוזרים אליה מרשימת המכשירים
   vat: 18, // לחישוב "רווח אחרי מע"מ" בפירוט הפנימי
   rounding: { step: 10, mode: 'ceil' },
   adminPhone: '0502272669', // לכאן נשלחות בקשות פירוט מהעובדים
