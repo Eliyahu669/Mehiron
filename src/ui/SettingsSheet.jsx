@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { REPAIRS, laborGroupsOf } from '../lib/defaults.js';
-import { laborGroupOf } from '../lib/pricing.js';
+import { laborGroupOf, prefixKey } from '../lib/pricing.js';
 import { allRepairs, repairLabel, qualitiesFor, qualityLabel, FRAME, DEFAULT_QUALITIES, partColumns } from '../lib/repairs.js';
 import { SHEETS } from '../lib/devices.js';
 import { SEGMENTS, rowLabel } from '../lib/devices.js';
@@ -256,6 +256,11 @@ function RepairTypes({ d, set }) {
   );
 }
 
+// "iPhone 14, iPhone 15" → "iPhone 14, 15" (תצוגה מקוצרת בטבלה)
+const shortPrefixes = (ps) => ps.map((p, i) => {
+  const [w, ...rest] = p.split(' ');
+  return i && rest.length && ps[i - 1].split(' ')[0] === w ? rest.join(' ') : p;
+}).join(', ');
 const splitPrefixes = (t) => [...new Set(String(t || '').split(/[,،\n]/).map((x) => x.trim()).filter(Boolean))];
 
 /** טבלת עלות העבודה: הסכומים, ועריכת הסדרות עצמן (שם, תחילת שם, הוספה ומחיקה) */
@@ -267,23 +272,24 @@ function LaborTab({ d, set, catalog }) {
   useEffect(() => { if (edit) box.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [edit?.id]);
   const withGroups = (fn) => set((y) => { y.laborGroups = JSON.parse(JSON.stringify(laborGroupsOf(y))); fn(y); });
 
+  // תחילת שם שכבר נמצאת בסדרה אחרת עוברת לסדרה שנערכת
+  const applyEdit = (gs, id, label, prefixes) => {
+    const keys = new Set(prefixes.map(prefixKey));
+    const out = gs.map((g) => (g.id === id ? { ...g, label, prefixes } : { ...g, prefixes: (g.prefixes || []).filter((p) => !keys.has(prefixKey(p))) }));
+    if (!out.some((g) => g.id === id)) out.push({ id, label, prefixes });
+    return out;
+  };
   // הדגמים שייכנסו לסדרה עם מה שכתוב כרגע בטופס (לפני השמירה)
   let members = [];
   if (edit) {
-    const gs = groups.map((g) => ({ ...g }));
-    const g = gs.find((x) => x.id === edit.id);
-    if (g) g.prefixes = splitPrefixes(edit.prefixes); else gs.push({ id: edit.id, label: edit.label, prefixes: splitPrefixes(edit.prefixes) });
-    const tmp = { ...d, laborGroups: gs };
+    const tmp = { ...d, laborGroups: applyEdit(groups, edit.id, edit.label, splitPrefixes(edit.prefixes)) };
     members = [...new Set((catalog?.models || []).filter((m) => laborGroupOf(m, tmp) === edit.id).map((m) => m.model))]
       .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
   }
 
   const save = () => {
     const label = edit.label.trim(), prefixes = splitPrefixes(edit.prefixes);
-    withGroups((y) => {
-      const g = y.laborGroups.find((x) => x.id === edit.id);
-      if (g) { g.label = label; g.prefixes = prefixes; } else y.laborGroups.push({ id: edit.id, label, prefixes });
-    });
+    withGroups((y) => { y.laborGroups = applyEdit(y.laborGroups, edit.id, label, prefixes); });
     setEdit(null);
   };
   const remove = () => {
@@ -305,8 +311,8 @@ function LaborTab({ d, set, catalog }) {
           <tbody>
             {groups.map((g) => (
               <tr key={g.id}>
-                <td><button className="sgrid-model" style={{ padding: '2px 0' }} onClick={() => setEdit({ id: g.id, label: g.label, prefixes: (g.prefixes || []).join(', '), auto: g.auto || '' })}>
-                  {g.label}{g.prefixes?.length ? <span>{g.prefixes.join(', ')}</span> : null}</button></td>
+                <td><button className="sgrid-model" style={{ padding: '2px 0' }} onClick={() => setEdit({ id: g.id, label: g.label, prefixes: (g.prefixes || []).join(', ') })}>
+                  {g.label}<span>{g.prefixes?.length ? shortPrefixes(g.prefixes) : 'אין דגמים'}</span></button></td>
                 {reps.map((r) => (
                   <td key={r.id}><input className="input sm num" inputMode="numeric" value={d.labor[g.id]?.[r.id] ?? ''}
                     onChange={(e) => set((y) => { y.labor[g.id] = y.labor[g.id] || {}; y.labor[g.id][r.id] = numOrNull(e.target.value); })} /></td>
@@ -316,14 +322,14 @@ function LaborTab({ d, set, catalog }) {
           </tbody>
         </table>
       </div>
-      {!edit && <div className="actions"><button className="btn primary" onClick={() => setEdit({ id: 'g' + Date.now().toString(36), label: '', prefixes: '', auto: '', isNew: true })}>{Icon.plus}<span>סדרה חדשה</span></button></div>}
+      {!edit && <div className="actions"><button className="btn primary" onClick={() => setEdit({ id: 'g' + Date.now().toString(36), label: '', prefixes: '', isNew: true })}>{Icon.plus}<span>סדרה חדשה</span></button></div>}
       {edit && (
         <div className="card labor-edit" ref={box} style={{ padding: 14, marginTop: 12 }}>
           <label className="field"><span>שם הסדרה</span>
             <input className="input" value={edit.label} placeholder="iPhone 8 / SE" onChange={(e) => setEdit({ ...edit, label: e.target.value, confirm: false })} /></label>
           <label className="field"><span>דגמים שהשם שלהם מתחיל ב… (כמה – מפרידים בפסיק)</span>
-            <input className="input" dir="ltr" value={edit.prefixes} placeholder="iPhone 8, iPhone SE" onChange={(e) => setEdit({ ...edit, prefixes: e.target.value, confirm: false })} /></label>
-          {edit.auto && <div className="muted">זיהוי אוטומטי: {edit.auto}. דגם שמתאים לתחילת שם של סדרה אחרת עובר אליה.</div>}
+            <textarea className="input" dir="ltr" rows={2} value={edit.prefixes} placeholder="למשל: Galaxy A5, Galaxy M" onChange={(e) => setEdit({ ...edit, prefixes: e.target.value, confirm: false })} /></label>
+          <div className="muted">תחילת שם שנמצאת בסדרה אחרת עוברת לסדרה הזו. כששתי תחילות שם מתאימות לדגם, קובעת הארוכה יותר.</div>
           <div className="muted" style={{ marginTop: 6 }}>בסדרה ({members.length}): {members.length ? members.slice(0, 24).join(', ') + (members.length > 24 ? ` ועוד ${members.length - 24}` : '') : 'אין דגמים'}</div>
           <div className="actions">
             <button className="btn primary" disabled={!edit.label.trim()} onClick={save}>שמור</button>

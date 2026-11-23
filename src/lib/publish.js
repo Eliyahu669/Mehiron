@@ -1,6 +1,7 @@
 // קטלוג "מחירים סופיים בלבד" לעובדים: בלי מחירי ספק, בלי שמות ספקים ובלי אחוזי רווח
 import { buildCatalog, activeLists } from './catalog.js';
 import { repairQuote, laborFor, roundPrice } from './pricing.js';
+import { laborGroupsOf } from './defaults.js';
 import { allRepairs, repairLabel } from './repairs.js';
 import { searchTokens } from './normalize.js';
 import { rmodelsOf } from './rmodels.js';
@@ -22,7 +23,7 @@ export function buildFullCatalog(allLists, cfg) {
 export function publicConfig(cfg) {
   return {
     labor: cfg.labor,
-    laborGroups: Array.isArray(cfg.laborGroups) && cfg.laborGroups.length ? cfg.laborGroups.map(({ id, label, family, families, tier, prefixes }) => ({ id, label, family: family || null, families: families || null, tier: tier || null, prefixes: prefixes || [] })) : null,
+    laborGroups: Array.isArray(cfg.laborGroups) && cfg.laborGroups.length ? laborGroupsOf(cfg).map(({ id, label, prefixes }) => ({ id, label, prefixes: prefixes || [] })) : null,
     laborRules: (cfg.laborRules || []).map(({ id, scope, match, group, labor }) => ({ id, scope, match, group: group || null, labor: labor || {} })),
     addons: cfg.addons,
     rounding: cfg.rounding,

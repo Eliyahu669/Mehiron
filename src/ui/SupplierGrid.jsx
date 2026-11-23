@@ -158,20 +158,27 @@ export default function SupplierGrid({ cfg, lists, supplier, store, toast, onCon
       <div className="actions" style={{ marginTop: 8 }}>
         <input className="input" style={{ flex: 1 }} placeholder="חיפוש דגם…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
-      <div className="card list">
-        {!rows.length && <div className="empty">אין מכשירים</div>}
-        {rows.map((r) => {
-          const cur = mine.get(r.id)?.price ?? null;
-          return (
-            <div key={r.id} className="dm-row">
-              <div className="main"><div className="t1" style={{ fontSize: 15 }}>{r.model}</div>
-                <div className="t2">{[r.storage ? fmtStorage(r.storage) : '', r.version].filter(Boolean).join(' · ') || '—'}</div></div>
-              <input key={`${r.id}|${cur ?? ''}`} className="input sm num" inputMode="decimal" placeholder="₪" defaultValue={cur ?? ''} aria-label={`${rowLabel(r)} מחיר`}
-                onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} onBlur={(e) => onPrice(r, e.target.value)} />
-            </div>
-          );
-        })}
-      </div>
+      {!rows.length ? <div className="card"><div className="empty">אין מכשירים</div></div> : (
+        <div className="grid-wrap">
+          <table className="sgrid dgrid">
+            <thead><tr><th className="stick">דגם</th><th>נפח</th><th>גרסה</th><th>מחיר</th></tr></thead>
+            <tbody>
+              {rows.map((r) => {
+                const cur = mine.get(r.id)?.price ?? null;
+                return (
+                  <tr key={r.id}>
+                    <th className="stick"><div className="dgrid-model">{r.model}</div></th>
+                    <td className="dgrid-c">{r.storage ? fmtStorage(r.storage) : '—'}</td>
+                    <td className="dgrid-c">{r.version || '—'}</td>
+                    <td><input key={`${r.id}|${cur ?? ''}`} className="sgrid-in" inputMode="decimal" placeholder="₪" defaultValue={cur ?? ''} aria-label={`${rowLabel(r)} מחיר`}
+                      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} onBlur={(e) => onPrice(r, e.target.value)} /></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
       <div className="muted" style={{ margin: '8px 4px' }}>{rows.length} שורות · המחיר נשמר כשעוזבים את התא. הוספה ועריכה של מכשירים – ב"רשימת מכשירים".</div>
     </>
   );
