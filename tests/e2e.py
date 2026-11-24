@@ -1,5 +1,6 @@
 # בדיקות קצה-לקצה בדפדפן (Chrome) על גרסת התצוגה המקדימה (מצב מקומי).
 # מריצים: npm run build:single && python3 tests/e2e.py
+import re
 import asyncio, subprocess, sys, os, time
 from playwright.async_api import async_playwright
 
@@ -357,6 +358,62 @@ async def main():
             await pg6.click('.card.list .row:has-text("iPhone 13") >> nth=0'); await pg6.wait_for_timeout(300)
             t = await pg6.inner_text('.quote >> nth=0')
             check('250' in t, f'iPhone 13 מקבל את עלות העבודה של "iPhone 12–18" (250): {t[:80]!r}')
+            await back(pg6); await pg6.fill('.search input', '')
+
+            print('איכויות: גם כש"מקורי" ראשון ברשימה – "מקורי משופץ" ו"מקורי סרוויס" נשמרים בעמודות שלהם ומוצגים בנפרד')
+            await pg6.click('.icon-btn[title="הגדרות"]'); await pg6.click('.sheet .pill:has-text("סוגי תיקון ואיכויות")'); await pg6.wait_for_timeout(200)
+            ql = pg6.locator('.sheet .card.list:has(button[aria-label="מחק איכות"])').first
+            for _ in range(8):
+                rows = await ql.locator('.row').all()
+                idx = [await r.locator('input >> nth=0').input_value() for r in rows].index('מקורי')
+                if idx == 0: break
+                await rows[idx].locator('button[aria-label="למעלה"]').click(); await pg6.wait_for_timeout(80)
+            first = await ql.locator('.row >> nth=0 >> input >> nth=0').input_value()
+            check(first == 'מקורי', f'"מקורי" ראשון ברשימת האיכויות: {first!r}')
+            await pg6.click('.sheet .pill:has-text("פריטים")'); await pg6.wait_for_timeout(150)
+            await pg6.click('.sheet .pills .pill:has-text("ספק חלקים (מחירון סמסונג)")'); await pg6.wait_for_timeout(200)
+            await pg6.fill('input[placeholder="חיפוש דגם / דגם יצרן…"]', 'iPhone 13 Pro'); await pg6.wait_for_timeout(250)
+            heads = await pg6.locator('.sgrid thead th').all_inner_texts()
+            ci_ref, ci_srv, ci_org = heads.index('מסך מקורי משופץ') - 1, heads.index('מסך מקורי סרוויס') - 1, heads.index('מסך מקורי') - 1
+            r13 = pg6.locator('.sgrid tbody tr').filter(has=pg6.locator('.sgrid-model', has_text=re.compile(r'^iPhone 13 Pro$'))).first
+            org0 = await r13.locator(f'input >> nth={ci_org}').input_value()
+            for ci, v in ((ci_ref, '950'), (ci_srv, '1150')):
+                c = r13.locator(f'input >> nth={ci}'); await c.fill(v); await c.press('Enter'); await pg6.wait_for_timeout(400)
+            await pg6.fill('input[placeholder="חיפוש דגם / דגם יצרן…"]', ''); await pg6.fill('input[placeholder="חיפוש דגם / דגם יצרן…"]', 'iPhone 13 Pro'); await pg6.wait_for_timeout(250)
+            vals = [await r13.locator(f'input >> nth={ci}').input_value() for ci in (ci_ref, ci_srv, ci_org)]
+            check(vals == ['950', '1150', org0], f'משופץ / סרוויס / מקורי בעמודות שלהם: {vals}')
+
+            print('תוספות: הוספה, עריכה ומחיקה')
+            await pg6.click('.sheet .pill:has-text("תוספות")'); await pg6.wait_for_timeout(150)
+            await pg6.click('.sheet button:has-text("תוספת חדשה")'); await pg6.wait_for_timeout(150)
+            await pg6.fill('.addon-edit .field >> nth=0 >> input', 'החלפת מסגרת')
+            await pg6.fill('.addon-edit .field >> nth=1 >> input', '120')
+            await pg6.click('.addon-edit .pill:text-is("מסך")')
+            await pg6.select_option('.addon-edit select', 'Apple')
+            await pg6.click('.addon-edit button:has-text("שמור")'); await pg6.wait_for_timeout(1200)
+            t = await pg6.inner_text('.sheet .card.list')
+            check('החלפת מסגרת' in t and 'מסך · Apple' in t, f'התוספת החדשה ברשימה: {t[-80:]!r}')
+            await pg6.screenshot(path=f'{SHOTS}/e2e-addons.png')
+            await back(pg6); await pg6.fill('.search input', '')
+            await pg6.click('.search input'); await pg6.keyboard.type('אייפון 13 פרו מסך', delay=10); await pg6.wait_for_timeout(300)
+            await pg6.click('.card.list .row:has-text("iPhone 13 Pro") >> nth=0'); await pg6.wait_for_timeout(300)
+            t = await pg6.inner_text('.quote >> nth=0')
+            check('מקורי משופץ' in t and 'מקורי סרוויס' in t, f'בעמוד הדגם: משופץ וסרוויס כשתי אפשרויות: {t[:200]!r}')
+            check('החלפת מסגרת' in t, 'התוספת החדשה מופיעה במסך של אייפון')
+            await back(pg6); await pg6.fill('.search input', '')
+            await pg6.click('.search input'); await pg6.keyboard.type('a54 מסך', delay=10); await pg6.wait_for_timeout(300)
+            await pg6.click('.card.list .row:has-text("Galaxy A54") >> nth=0'); await pg6.wait_for_timeout(300)
+            check('החלפת מסגרת' not in await pg6.inner_text('.quote >> nth=0'), 'תוספת של Apple לא מופיעה בסמסונג')
+            await back(pg6)
+            await pg6.click('.icon-btn[title="הגדרות"]'); await pg6.click('.sheet .pill:has-text("תוספות")'); await pg6.wait_for_timeout(200)
+            await pg6.click('.sheet .card.list button.main:has-text("החלפת מסגרת")'); await pg6.wait_for_timeout(150)
+            await pg6.fill('.addon-edit .field >> nth=0 >> input', 'החלפת מסגרת אחורית')
+            await pg6.click('.addon-edit button:has-text("שמור")'); await pg6.wait_for_timeout(300)
+            check('החלפת מסגרת אחורית' in await pg6.inner_text('.sheet .card.list'), 'עריכת שם התוספת')
+            await pg6.click('.sheet .card.list button.main:has-text("החלפת מסגרת אחורית")'); await pg6.wait_for_timeout(150)
+            await pg6.click('.addon-edit button:has-text("מחק תוספת")'); await pg6.click('.addon-edit button:has-text("לחץ שוב")'); await pg6.wait_for_timeout(1200)
+            t = await pg6.inner_text('.sheet .card.list')
+            check('החלפת מסגרת' not in t and 'צריבת/העברת BMS' in t, 'מחיקת התוספת (השאר נשארו)')
             await back(pg6); await pg6.close()
 
             print('אין אף רשומת היסטוריה שנוצרה בלי פעולת משתמש')

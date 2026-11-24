@@ -16,7 +16,8 @@ const SCREEN = () => [
   COPY(),
   ORIGINAL(),
 ];
-// הסדר קובע גם את העדיפות בזיהוי: "מקורי סאני" הוא מקורי סרוויס (לא "מקורי"), "תחליפי OLED" הוא OLED
+// איכויות כלליות: נבחרות רק כשאין איכות מדויקת יותר באותה שורה
+const GENERIC_Q = new Set(['original', 'copy']);
 export const DEFAULT_QUALITIES = {
   screen: SCREEN(),
   outer: SCREEN(),
@@ -101,11 +102,16 @@ export function resolveQuality(repair, variant, cfg, defaultQid = '') {
   tk = fr.tk;
   // מילים של סוג התיקון עצמו ("מסך חיצוני") לא שייכות לאיכות
   for (const r of allRepairs(cfg)) for (const w of longestFirst(r.words || [])) tk = without(tk, findPhrase(tk, w));
-  let found = null, hit = null;
-  for (const x of list) {
-    for (const w of longestFirst([x.label, ...(x.words || [])])) { hit = findPhrase(tk, w); if (hit) break; }
-    if (hit) { found = x; break; }
-  }
+  // כשכתובות כמה איכויות קובעת המדויקת: ביטוי ארוך יותר ("מקורי משופץ" ולא "מקורי"), ואחר כך איכות מוגדרת לפני
+  // "מקורי" / "תחליפי" לבד ("מקורי סאני" → סרוויס, "תחליפי OLED" → OLED). רק בתיקו מוחלט – הסדר ברשימה
+  let found = null, hit = null, best = null;
+  list.forEach((x, i) => {
+    let h = null;
+    for (const w of longestFirst([x.label, ...(x.words || [])])) { h = findPhrase(tk, w); if (h) break; }
+    if (!h) return;
+    const rank = [h[1], GENERIC_Q.has(x.id) ? 0 : 1, -i];
+    if (!best || rank[0] > best[0] || (rank[0] === best[0] && (rank[1] > best[1] || (rank[1] === best[1] && rank[2] > best[2])))) { best = rank; found = x; hit = h; }
+  });
   const noise = new Set((cfg?.qualityNoise || []).flatMap((w) => toks(w)));
   const rest = without(tk, hit).filter((t) => !FILLER.has(t) && !noise.has(t) && !/^\d+$/.test(t));
   if (!found && defaultQid) found = list.find((x) => x.id === defaultQid) || null;
