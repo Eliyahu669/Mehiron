@@ -60,7 +60,7 @@ function QuoteCard({ q: q0, model, cfg, sup, customer, isAdmin, canEdit, lists, 
   const [editing, setEditing] = useState(false);
   const [addonIds, setAddonIds] = useState([]);
   const [showInternal, setShowInternal] = useState(false);
-  const applicable = (cfg.addons || []).filter((a) => (!a.repairs || a.repairs.includes(q0.repair)) && (!a.families || a.families.includes(model.family)));
+  const applicable = (cfg.addons || []).filter((a) => (!a.repairs || a.repairs.includes(q0.repair)) && (!a.families || a.families.includes(model.family)) && (!a.brands || a.brands.includes(model.brand)));
   const q = addonIds.length ? getRepairQuote(model, q0.repair, catalog, cfg, addonIds) : q0;
   const best = q.options[0];
   const headline = best ? best.final : null;

@@ -15,7 +15,7 @@ import { resolveQuality, optionName, optionKey, parseReply, manualPart, allRepai
 import { splitMulti, unknownModelVariant } from '../src/lib/parser.js';
 import { seedRepairModels, matchRow, codesIn, missingFromDevices, addRows, attachRow, rekeyParts } from '../src/lib/rmodels.js';
 import { partCells, setPartCell } from '../src/lib/partcells.js';
-import { DEFAULT_PART_COLUMNS, partColumns } from '../src/lib/repairs.js';
+import { DEFAULT_PART_COLUMNS, partColumns, DEFAULT_QUALITIES } from '../src/lib/repairs.js';
 
 const devices = (t) => parseMessage(t, { kind: 'devices' });
 const parts = (t, partType = 'screen') => parseMessage(t, { kind: 'parts', partType });
@@ -663,4 +663,20 @@ test('סדרות בטבלת העבודה: הכול לפי תחילת השם, ש�
   assert.equal(laborFor(iph('iPhone 17'), 'screen', pcfg).amount, 300);
   assert.equal(laborFor(iph('iPhone 13'), 'screen', mergePublicConfig(JSON.parse(JSON.stringify(publicConfig(old))))).amount, 150);
   assert.equal(laborFor(iph('iPhone 17'), 'screen', mergePublicConfig(publicConfig(mergeConfig(null)))).amount, 250);
+});
+
+test('זיהוי איכות לא תלוי בסדר הרשימה: הביטוי המדויק קובע', () => {
+  const def = DEFAULT_QUALITIES.screen;
+  const o = (id) => def.find((x) => x.id === id);
+  // "מקורי" ו"תחליפי" לפני כל השאר – כמו כשמזיזים אותם למעלה בהגדרות
+  const cfg = mergeConfig({ qualities: { screen: ['original', 'copy', 'incell', 'oled', 'softoled', 'refurb', 'service'].map(o) } });
+  const q = (v) => resolveQuality('screen', v, cfg).qid;
+  assert.equal(q('מקורי משופץ'), 'refurb');
+  assert.equal(q('מקורי סרוויס'), 'service');
+  assert.equal(q('מקורי סאני'), 'service');
+  assert.equal(q('מקורי פירוק'), 'refurb');
+  assert.equal(q('תחליפי OLED'), 'oled');
+  assert.equal(q('Soft OLED'), 'softoled');
+  assert.equal(q('מקורי'), 'original');
+  assert.equal(q('תחליפי'), 'copy');
 });

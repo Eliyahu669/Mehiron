@@ -81,17 +81,7 @@ export default function SettingsSheet({ cfg, catalog, lists, store, focus, initi
             </div>
           )}
 
-          {tab === 'addons' && (
-            <div className="card list">
-              {d.addons.map((a, i) => (
-                <div key={a.id} className="row">
-                  <div className="main"><div className="t1" style={{ fontSize: 15 }}>{a.label}</div>
-                    <div className="t2">{a.repairs ? reps.filter((r) => a.repairs.includes(r.id)).map((r) => r.label).join(', ') : 'כל התיקונים'}{a.manager ? ' · באישור מנהל סניף' : ''}</div></div>
-                  <input className="input sm num" inputMode="numeric" value={a.amount ?? ''} onChange={(e) => set((y) => { y.addons[i].amount = numOrNull(e.target.value); })} />
-                </div>
-              ))}
-            </div>
-          )}
+          {tab === 'addons' && <AddonsTab d={d} set={set} />}
 
           {tab === 'suppliers' && (
             <>
@@ -205,7 +195,7 @@ function RepairTypes({ d, set }) {
       <div className="actions"><button className="btn" onClick={() => set((y) => { y.customRepairs = [...(y.customRepairs || []), { id: 'c' + Date.now().toString(36), label: '', words: [] }]; })}>{Icon.plus}<span>סוג תיקון חדש</span></button></div>
 
       <div className="section-title">רמות איכות</div>
-      <div className="muted" style={{ margin: '0 4px 8px' }}>השם הוא מה שהלקוח רואה. המילים הן איך שהספקים כותבים את האיכות (בכל שפה ובכל כתיב). הסדר קובע מה קודם כשכתובות כמה: "מקורי סאני" → מקורי סרוויס, "תחליפי OLED" → OLED.</div>
+      <div className="muted" style={{ margin: '0 4px 8px' }}>השם הוא מה שהלקוח רואה. המילים הן איך שהספקים כותבים את האיכות (בכל שפה ובכל כתיב). כשכתובות כמה איכויות, קובעת המדויקת: "מקורי משופץ" → מקורי משופץ, "מקורי סאני" → מקורי סרוויס, "תחליפי OLED" → OLED.</div>
       <select className="input" value={rid} onChange={(e) => setRid(e.target.value)}>
         {reps.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
       </select>
@@ -261,6 +251,85 @@ const shortPrefixes = (ps) => ps.map((p, i) => {
   const [w, ...rest] = p.split(' ');
   return i && rest.length && ps[i - 1].split(' ')[0] === w ? rest.join(' ') : p;
 }).join(', ');
+// תוספת יכולה להיות מוגבלת לחברה. תוספות ישנות מוגבלות לפי סדרה (families: ['iphone']) – מוצגות כחברה
+const ADDON_BRANDS = ['Apple', 'Samsung', 'Xiaomi'];
+const FAMILY_BRAND = (f) => (f === 'iphone' ? 'Apple' : /^galaxy/.test(f || '') ? 'Samsung' : f === 'xiaomi' || f === 'redmi' ? 'Xiaomi' : '');
+const addonBrand = (a) => a.brands?.[0] || FAMILY_BRAND(a.families?.[0]);
+
+/** תוספות: הוספה, עריכה (שם, מחיר, לאיזה תיקונים, חברה, באישור מנהל) ומחיקה */
+function AddonsTab({ d, set }) {
+  const reps = allRepairs(d);
+  const list = d.addons || [];
+  const [edit, setEdit] = useState(null);
+  const box = useRef(null);
+  useEffect(() => { if (edit) box.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, [edit?.id]);
+  const open = (a) => setEdit({ id: a.id, label: a.label || '', amount: a.amount ?? '', repairs: a.repairs ? [...a.repairs] : [], brand: addonBrand(a), manager: !!a.manager, isNew: false });
+  const toggleRepair = (id) => setEdit((e) => ({ ...e, repairs: e.repairs.includes(id) ? e.repairs.filter((x) => x !== id) : [...e.repairs, id], confirm: false }));
+  const save = () => {
+    set((y) => {
+      y.addons = y.addons || [];
+      const i = y.addons.findIndex((x) => x.id === edit.id);
+      const prev = i >= 0 ? y.addons[i] : {};
+      const a = { ...prev, id: edit.id, label: edit.label.trim(), amount: numOrNull(String(edit.amount)), manager: edit.manager || undefined };
+      if (edit.repairs.length) a.repairs = edit.repairs; else delete a.repairs;
+      // החברה השתנתה (או תוספת חדשה) – נשמרת כחברה; אחרת ההגבלה הקיימת נשארת כמו שהיא
+      if (edit.brand !== addonBrand(prev)) { delete a.families; if (edit.brand) a.brands = [edit.brand]; else delete a.brands; }
+      if (i >= 0) y.addons[i] = a; else y.addons.push(a);
+    });
+    setEdit(null);
+  };
+  const remove = () => {
+    if (!edit.confirm) { setEdit({ ...edit, confirm: true }); return; }
+    set((y) => { y.addons = (y.addons || []).filter((x) => x.id !== edit.id); });
+    setEdit(null);
+  };
+  const where = (a) => [a.repairs ? reps.filter((r) => a.repairs.includes(r.id)).map((r) => r.label).join(', ') : 'כל התיקונים', addonBrand(a), a.manager ? 'באישור מנהל סניף' : ''].filter(Boolean).join(' · ');
+
+  return (
+    <>
+      <div className="muted" style={{ margin: '8px 4px' }}>תוספת מופיעה בעמוד הדגם בתיקונים שנבחרו, ומתווספת למחיר כשמסמנים אותה. לחיצה על שם – עריכה או מחיקה.</div>
+      <div className="card list">
+        {!list.length && <div className="empty">אין תוספות</div>}
+        {list.map((a, i) => (
+          <div key={a.id} className="row">
+            <button className="main" style={{ textAlign: 'start' }} onClick={() => open(a)}><div className="t1" style={{ fontSize: 15, color: 'var(--blue)' }}>{a.label || 'בלי שם'}</div>
+              <div className="t2">{where(a)}</div></button>
+            <input className="input sm num" inputMode="numeric" value={a.amount ?? ''} aria-label={`מחיר ${a.label}`} onChange={(e) => set((y) => { y.addons[i].amount = numOrNull(e.target.value); })} />
+          </div>
+        ))}
+      </div>
+      {!edit && <div className="actions"><button className="btn primary" onClick={() => setEdit({ id: 'a' + Date.now().toString(36), label: '', amount: '', repairs: [], brand: '', manager: false, isNew: true })}>{Icon.plus}<span>תוספת חדשה</span></button></div>}
+      {edit && (
+        <div className="card addon-edit" ref={box} style={{ padding: 14, marginTop: 12 }}>
+          <label className="field"><span>שם התוספת</span>
+            <input className="input" value={edit.label} placeholder="החלפת מסגרת" onChange={(e) => setEdit({ ...edit, label: e.target.value, confirm: false })} /></label>
+          <label className="field"><span>מחיר (₪)</span>
+            <input className="input num" inputMode="numeric" value={edit.amount} onChange={(e) => setEdit({ ...edit, amount: e.target.value.replace(/[^\d.]/g, ''), confirm: false })} /></label>
+          <div className="field"><span>באיזה תיקונים</span>
+            <div className="pills" style={{ flexWrap: 'wrap', paddingTop: 4 }}>
+              <button className={'pill' + (!edit.repairs.length ? ' on' : '')} onClick={() => setEdit({ ...edit, repairs: [], confirm: false })}>כל התיקונים</button>
+              {reps.map((r) => <button key={r.id} className={'pill' + (edit.repairs.includes(r.id) ? ' on' : '')} onClick={() => toggleRepair(r.id)}>{r.label}</button>)}
+            </div></div>
+          <label className="field"><span>מכשירים</span>
+            <select className="input" value={edit.brand} onChange={(e) => setEdit({ ...edit, brand: e.target.value, confirm: false })}>
+              <option value="">כל המכשירים</option>
+              {ADDON_BRANDS.map((b) => <option key={b} value={b}>רק {b}</option>)}
+            </select></label>
+          <div className="row" style={{ padding: '8px 4px' }}>
+            <div className="main"><div className="t1" style={{ fontSize: 15 }}>באישור מנהל סניף</div></div>
+            <button className={'switch' + (edit.manager ? ' on' : '')} role="switch" aria-checked={edit.manager} aria-label="באישור מנהל סניף" onClick={() => setEdit({ ...edit, manager: !edit.manager, confirm: false })}><span /></button>
+          </div>
+          <div className="actions">
+            <button className="btn primary" disabled={!edit.label.trim() || !(Number(edit.amount) > 0)} onClick={save}>שמור</button>
+            <button className="btn" onClick={() => setEdit(null)}>ביטול</button>
+            {!edit.isNew && <button className="btn danger" onClick={remove}>{edit.confirm ? 'למחוק את התוספת? לחץ שוב' : 'מחק תוספת'}</button>}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 const splitPrefixes = (t) => [...new Set(String(t || '').split(/[,،\n]/).map((x) => x.trim()).filter(Boolean))];
 
 /** טבלת עלות העבודה: הסכומים, ועריכת הסדרות עצמן (שם, תחילת שם, הוספה ומחיקה) */
