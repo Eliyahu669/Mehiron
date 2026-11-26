@@ -12,6 +12,7 @@ import ModelSheet from './ui/ModelSheet.jsx';
 import ImportSheet from './ui/ImportSheet.jsx';
 import SettingsSheet from './ui/SettingsSheet.jsx';
 import { useBack, useExitGuard } from './ui/useBack.js';
+import { currentTheme, saveTheme } from './lib/theme.js';
 
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* */ } };
@@ -30,6 +31,7 @@ export default function App({ store }) {
   const [mode, setMode] = useState(() => lsGet('mehiron:mode', 'repairs')); // 'repairs' | 'devices'
   const [filters, setFilters] = useState({ repairs: EMPTY, devices: EMPTY }); // חיפוש נפרד לכל מחירון
   const [customer, setCustomer] = useState(() => lsGet('mehiron:customer', false));
+  const [theme, setTheme] = useState(currentTheme);
   const [open, setOpen] = useState(null); // דגם פתוח
   const [panel, setPanel] = useState(null); // 'import' | 'settings' | 'users'
   const [focusItem, setFocusItem] = useState(null);
@@ -162,6 +164,8 @@ export default function App({ store }) {
       <div className="topbar">
         <div className="topbar-row">
           <div className="brand">מחירון</div>
+          <button className="icon-btn" title={theme === 'dark' ? 'מעבר למצב בהיר' : 'מעבר למצב כהה'} aria-label={theme === 'dark' ? 'מעבר למצב בהיר' : 'מעבר למצב כהה'}
+            onClick={() => setTheme(saveTheme(theme === 'dark' ? 'light' : 'dark'))}>{theme === 'dark' ? Icon.moon : Icon.sun}</button>
           {seeCost && <button className={'icon-btn' + (customer ? ' on' : '')} title="מצב לקוח" onClick={() => { setCustomer(!customer); toast(customer ? 'מצב פנימי: רואים עלויות ורווח' : 'מצב לקוח: רק מחיר סופי'); }}>{customer ? Icon.eyeOff : Icon.eye}</button>}
           {isAdmin && !customer && <button className="icon-btn" title="הגדרות" style={{ position: 'relative' }} onClick={() => setPanel('settings')}>{Icon.gear}{requests.length > 0 && <span className="badge num">{requests.length}</span>}</button>}
           {isAdmin && !customer && <button className="pill-btn" onClick={() => setPanel('import')}>{Icon.plus}<span>עדכן מחירון</span></button>}
@@ -184,13 +188,13 @@ export default function App({ store }) {
       </div>
 
       {data.error && data.ready && (
-        <div className="banner" style={{ background: 'rgba(255,59,48,.1)', color: '#D70015' }}>{ERRORS[data.error] || 'בעיה בסנכרון עם השרת. המחירים המוצגים הם האחרונים שנטענו.'}</div>
+        <div className="banner red">{ERRORS[data.error] || 'בעיה בסנכרון עם השרת. המחירים המוצגים הם האחרונים שנטענו.'}</div>
       )}
       {isAdmin && pubError && (
-        <div className="banner" style={{ background: 'rgba(255,59,48,.1)', color: '#D70015' }}>המחירים לא עודכנו אצל העובדים: {pubError}</div>
+        <div className="banner red">המחירים לא עודכנו אצל העובדים: {pubError}</div>
       )}
       {isAdmin && requests.length > 0 && !customer && (
-        <button className="banner" style={{ width: '100%', textAlign: 'right', background: 'rgba(0,122,255,.1)', color: 'var(--blue)' }} onClick={() => { setFocusItem(null); setPanel('users'); }}>
+        <button className="banner blue" style={{ width: '100%', textAlign: 'right' }} onClick={() => { setFocusItem(null); setPanel('users'); }}>
           {requests.length === 1 ? 'בקשת פירוט חדשה מעובד' : `${requests.length} בקשות פירוט חדשות מעובדים`} · לצפייה ואישור ‹
         </button>
       )}
